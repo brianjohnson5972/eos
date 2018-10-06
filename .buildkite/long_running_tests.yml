@@ -96,7 +96,7 @@ steps:
         echo "--- :m: Starting MongoDB" && \
         $(which mongod) --fork --logpath "$(pwd)"/mongod.log && \
         echo "+++ :microscope: Running tests" && \
-        ln -s "$(pwd)" /data/job && cd /data/job/build && ctest -L long_running_tests --output-on-failure
+        ln -s "$(pwd)" /data/job && cd /data/job/build && ctest -L long_running_tests -V
     retry:
       automatic:
         limit: 1
