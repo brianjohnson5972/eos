@@ -16,6 +16,8 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/path.hpp>
 
+#include <chrono>
+
 using namespace eosio::chain;
 namespace bfs = boost::filesystem;
 namespace bpo = boost::program_options;
@@ -39,6 +41,7 @@ struct blocklog {
 };
 
 void blocklog::read_log() {
+   auto start = std::chrono::high_resolution_clock::now();
    block_log block_logger(blocks_dir);
    const auto end = block_logger.read_head();
    EOS_ASSERT( end, block_log_exception, "No blocks found in block log" );
@@ -128,6 +131,9 @@ void blocklog::read_log() {
    }
    if (as_json_array)
       *out << "]";
+
+   const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() / 1000;
+   ilog("reading blocklog took ${t} msec", ("t",duration));
 }
 
 void blocklog::set_program_options(options_description& cli)

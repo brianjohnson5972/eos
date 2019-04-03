@@ -209,6 +209,9 @@ class Cluster(object):
         if Utils.Debug:
             nodeosArgs += " --contracts-console"
 
+        chain_state_db_size_mb=1024*64
+        nodeosArgs += " --chain-state-db-size-mb %d" % (chain_state_db_size_mb)
+
         if nodeosArgs:
             cmdArr.append("--nodeos")
             cmdArr.append(nodeosArgs)

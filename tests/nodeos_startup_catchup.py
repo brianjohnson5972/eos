@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import signal
 from testUtils import Utils
 import testUtils
 import time
@@ -132,12 +133,12 @@ try:
         Print("Start catchup node")
         cluster.launchUnstarted(cachePopen=True)
         lastLibNum=lib(node0)
-        time.sleep(2)
         # verify producer lib is still advancing
         node0.waitForBlock(lastLibNum+1, timeout=twoRounds/2, blockType=BlockType.lib)
 
         catchupNode=cluster.getNodes()[-1]
         catchupNodeNum=cluster.getNodes().index(catchupNode)
+        time.sleep(2)
         lastCatchupLibNum=lib(catchupNode)
 
         Print("Verify catchup node %s's LIB is advancing" % (catchupNodeNum))
@@ -167,6 +168,12 @@ try:
         Print("Verify catchup node is advancing to producer")
         # verify catchup node is advancing to producer
         catchupNode.waitForBlock(lastLibNum, timeout=(numBlocksToCatchup)/2, blockType=BlockType.lib)
+
+        Print("Shutdown catchup node and validate exit code")
+        catchupNode.interruptAndVerifyExitStatus(60)
+        if not catchupNode.kill(signal.SIGTERM):
+            Print("NOT ABLE TO SEND SIGTERM")
+        catchupNode.popenProc=None
 
     testSuccessful=True
 

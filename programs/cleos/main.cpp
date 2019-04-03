@@ -252,7 +252,7 @@ fc::variant call( const std::string& url,
    }
    catch(boost::system::system_error& e) {
       if(url == ::url)
-         std::cerr << localized("Failed to connect to nodeos at ${u}; is nodeos running?", ("u", url)) << std::endl;
+         std::cerr << localized("Failed to connect to nodeos at ${u}; is nodeos running? what=${w}", ("u", url)("w",e.what())) << std::endl;
       else if(url == ::wallet_url)
          std::cerr << localized("Failed to connect to keosd at ${u}; is keosd running?", ("u", url)) << std::endl;
       throw connection_exception(fc::log_messages{FC_LOG_MESSAGE(error, e.what())});
