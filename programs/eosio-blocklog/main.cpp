@@ -16,6 +16,8 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/path.hpp>
 
+#include <chrono>
+
 using namespace eosio::chain;
 namespace bfs = boost::filesystem;
 namespace bpo = boost::program_options;
@@ -39,12 +41,14 @@ struct blocklog {
 };
 
 void blocklog::read_log() {
+   auto start = std::chrono::high_resolution_clock::now();
    block_log block_logger(blocks_dir);
    const auto end = block_logger.read_head();
    EOS_ASSERT( end, block_log_exception, "No blocks found in block log" );
    EOS_ASSERT( end->block_num() > 1, block_log_exception, "Only one block found in block log" );
 
-   ilog( "existing block log contains block num 1 through block num ${n}", ("n",end->block_num()) );
+   //fix message below, first block might not be 1, first_block_num is not set yet
+   //ilog( "existing block log contains block num 1 through block num ${n}", ("n",end->block_num()) );
 
    optional<chainbase::database> reversible_blocks;
    try {
@@ -89,8 +93,10 @@ void blocklog::read_log() {
    signed_block_ptr next;
    fc::variant pretty_output;
    const fc::microseconds deadline = fc::seconds(10);
+   auto count = 0;
    auto print_block = [&](signed_block_ptr& next) {
-      abi_serializer::to_variant(*next,
+       ++count;
+/*      abi_serializer::to_variant(*next,
                                  pretty_output,
                                  []( account_name n ) { return optional<abi_serializer>(); },
                                  deadline);
@@ -106,11 +112,12 @@ void blocklog::read_log() {
           fc::json::to_stream(*out, v, fc::json::stringify_large_ints_and_doubles);
        else
           *out << fc::json::to_pretty_string(v) << "\n";
+*/
    };
    bool contains_obj = false;
    while((block_num <= last_block) && (next = block_logger.read_block_by_num( block_num ))) {
-      if (as_json_array && contains_obj)
-         *out << ",";
+//      if (as_json_array && contains_obj)
+//         *out << ",";
       print_block(next);
       ++block_num;
       contains_obj = true;
@@ -118,16 +125,19 @@ void blocklog::read_log() {
    if (reversible_blocks) {
       const reversible_block_object* obj = nullptr;
       while( (block_num <= last_block) && (obj = reversible_blocks->find<reversible_block_object,by_num>(block_num)) ) {
-         if (as_json_array && contains_obj)
-            *out << ",";
+//         if (as_json_array && contains_obj)
+//            *out << ",";
          auto next = obj->get_block();
          print_block(next);
          ++block_num;
          contains_obj = true;
       }
    }
-   if (as_json_array)
-      *out << "]";
+//   if (as_json_array)
+//      *out << "]";
+
+   const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() / 1000;
+   ilog("reading blocklog took ${t} msec, ${b} blocks", ("t",duration)("b",count));
 }
 
 void blocklog::set_program_options(options_description& cli)
