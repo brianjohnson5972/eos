@@ -46,8 +46,20 @@ struct blocklog {
    bool                             help;
 };
 
+struct report_time {
+    report_time()
+    : _start(std::chrono::high_resolution_clock::now()) {
+    }
+
+    ~report_time() {
+        const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - _start).count() / 1000;
+        ilog("blocklog action took ${t} msec", ("t",duration));
+    }
+    const std::chrono::high_resolution_clock::time_point _start;
+};
+
 void blocklog::read_log() {
-   auto start = std::chrono::high_resolution_clock::now();
+   report_time rt;
    block_log block_logger(blocks_dir);
    const auto end = block_logger.read_head();
    EOS_ASSERT( end, block_log_exception, "No blocks found in block log" );
@@ -141,9 +153,6 @@ void blocklog::read_log() {
    }
 //   if (as_json_array)
 //      *out << "]";
-
-   const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() / 1000;
-   ilog("reading blocklog took ${t} msec, ${b} blocks", ("t",duration)("b",count));
 }
 
 void blocklog::set_program_options(options_description& cli)
@@ -217,6 +226,7 @@ struct trim_data {            //used by trim_blocklog_front(), trim_blocklog_end
 
 
 trim_data::trim_data(bfs::path block_dir) {
+   report_time rt;
    using namespace std;
    block_file_name= (block_dir/"blocks.log").generic_string();
    index_file_name= (block_dir/"blocks.index").generic_string();
@@ -240,6 +250,7 @@ trim_data::trim_data(bfs::path block_dir) {
 void trim_data::find_block_pos(uint32_t n) {
    //get file position of block n from blocks.index then confirm block n is found in blocks.log at that position
    //sets fpos0 and fpos1, throws exception if block at fpos0 is not block n
+   report_time rt;
    using namespace std;
    index_pos= sizeof(uint64_t)*(n-first_block);
    uint64_t pos= lseek(ind_in,index_pos,SEEK_SET);
@@ -263,6 +274,7 @@ void trim_data::find_block_pos(uint32_t n) {
 }
 
 int trim_blocklog_end(bfs::path block_dir, uint32_t n) {       //n is last block to keep (remove later blocks)
+   report_time rt;
    using namespace std;
    cout << "\nIn directory " << block_dir << " will trim all blocks after block " << n << " from blocks.log and blocks.index.\n";
    trim_data td(block_dir);
@@ -284,6 +296,7 @@ int trim_blocklog_end(bfs::path block_dir, uint32_t n) {       //n is last block
 }
 
 int trim_blocklog_front(bfs::path block_dir, uint32_t n) {        //n is first block to keep (remove prior blocks)
+   report_time rt;
    using namespace std;
    cout << "\nIn directory " << block_dir << " will trim all blocks before block " << n << " from blocks.log and blocks.index.\n";
    trim_data td(block_dir);
@@ -444,13 +457,14 @@ int trim_blocklog_front(bfs::path block_dir, uint32_t n) {        //n is first b
 
 
 int make_index(bfs::path block_dir, string out_file) {
+    report_time rt;
    //this code makes blocks.index much faster than nodeos (in recent test 80 seconds vs. 90 minutes)
    using namespace std;
    string block_file_name= (block_dir / "blocks.log").generic_string();
    string out_file_name=   (block_dir / out_file     ).generic_string();
-   cout << '\n';
-   cout << "Will read existing blocks.log file " << block_file_name << '\n';
-   cout << "Will write new blocks.index file " << out_file_name << '\n';
+//   cout << '\n';
+//   cout << "Will read existing blocks.log file " << block_file_name << '\n';
+//   cout << "Will write new blocks.index file " << out_file_name << '\n';
    int fin = open(block_file_name.c_str(), O_RDONLY);
    EOS_ASSERT( fin>0, block_log_not_found, "cannot read block file ${file}", ("file",block_file_name) );
 
@@ -465,13 +479,13 @@ int make_index(bfs::path block_dir, string out_file) {
    //read blocks.log to see if version 1 or 2 and get first_blocknum (implicit 1 if version 1)
    uint32_t version=0, first_block=0;
    read(fin,(char*)&version,sizeof(version));
-   cout << "block log version= " << version << '\n';
+//   cout << "block log version= " << version << '\n';
    EOS_ASSERT( version==1 || version==2, block_log_unsupported_version, "block log version ${v} is not supported", ("v",version));
    if (version == 1)
       first_block= 1;
    else
       read(fin,(char*)&first_block,sizeof(first_block));
-   cout << "first block= " << first_block << '\n';
+//   cout << "first block= " << first_block << '\n';
 
    uint64_t pos= lseek(fin,0,SEEK_END);                     //get blocks.log file length
    uint64_t last_buf_len= pos & ((uint64_t)buf_len-1);      //buf_len is a power of 2 so -1 creates low bits all 1
@@ -492,9 +506,9 @@ int make_index(bfs::path block_dir, string out_file) {
    index_start= file_pos - pos;                             //buf index for block start
    bnum= *(uint32_t*)(buf + index_start + blknum_offset);   //block number of previous block (is big endian)
    bnum= endian_reverse_u32(bnum)+1;                        //convert from big endian to little endian and add 1
-   cout << "last block=  " << bnum << '\n';
-   cout << '\n';
-   cout << "block " << setw(10) << bnum << "    file_pos " << setw(14) << file_pos << '\n';  //first progress indicator
+//   cout << "last block=  " << bnum << '\n';
+//   cout << '\n';
+//   cout << "block " << setw(10) << bnum << "    file_pos " << setw(14) << file_pos << '\n';  //first progress indicator
    uint64_t last_file_pos= file_pos;                        //used to check that file_pos is strictly decreasing
    uint32_t end_block{bnum};                                //save for message at end
 
@@ -516,7 +530,7 @@ int make_index(bfs::path block_dir, string out_file) {
       if (bnum==blk_base) {                                 //if fpos_list is full
          write(fout,(char*)fpos_list,last_ind_buf_len);     //write fpos_list to index file
          if (ind_pos==0) {                                  //if done writing index file
-            cout << "block " << setw(10) << bnum << "    file_pos " << setw(14) << file_pos << '\n';  //last progress indicator
+//            cout << "block " << setw(10) << bnum << "    file_pos " << setw(14) << file_pos << '\n';  //last progress indicator
             EOS_ASSERT( bnum == first_block, block_log_exception, "blocks.log does not contain consecutive block numbers" );
             break;
          }
@@ -538,10 +552,10 @@ int make_index(bfs::path block_dir, string out_file) {
       index_end= index_start-8;                             //index in buf where block ends and block file position starts
       file_pos= *(uint64_t*)(buf+index_end);                //file pos of block start
       if (file_pos >= last_file_pos) {                      //file_pos will decrease if linked list is not corrupt
-         cout << '\n';
-         cout << "file pos for block " << bnum+1 << " is " << last_file_pos << '\n';
-         cout << "file pos for block " << bnum   << " is " <<      file_pos << '\n';
-         cout << "The linked list of blocks in blocks.log should run from last block to first block in reverse order\n";
+//         cout << '\n';
+//         cout << "file pos for block " << bnum+1 << " is " << last_file_pos << '\n';
+//         cout << "file pos for block " << bnum   << " is " <<      file_pos << '\n';
+//         cout << "The linked list of blocks in blocks.log should run from last block to first block in reverse order\n";
          EOS_ASSERT( file_pos<last_file_pos, block_log_exception, "blocks.log linked list of blocks is corrupt" );
       }
       last_file_pos= file_pos;
@@ -554,13 +568,13 @@ int make_index(bfs::path block_dir, string out_file) {
       }
       index_start= file_pos - pos;                          //buf index for block start
       fpos_list[bnum-blk_base]= file_pos;                   //write filepos for block bnum
-      if ((bnum & 0xfffff) == 0)                            //periodically print a progress indicator
-         cout << "block " << setw(10) << bnum << "    file_pos " << setw(14) << file_pos << '\n';
+//      if ((bnum & 0xfffff) == 0)                            //periodically print a progress indicator
+//         cout << "block " << setw(10) << bnum << "    file_pos " << setw(14) << file_pos << '\n';
    }
 
    close(fout);
    close(fin);
-   cout << "\nwrote " << (end_block+1-first_block) << " file positions to " << out_file_name << '\n';
+//   cout << "\nwrote " << (end_block+1-first_block) << " file positions to " << out_file_name << '\n';
    return 0;
 }
 
