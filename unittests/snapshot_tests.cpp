@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(test_pending_schedule_snapshot, SNAPSHOT_SUITE, snapshot_suites)
 {
-   tester chain(setup_policy::full);
+   tester chain(setup_policy::preactivate_feature_and_new_bios);
    ilog("here 1");
    auto block = chain.produce_block();
    ilog("block: ${num}", ("num", block->block_num()));
