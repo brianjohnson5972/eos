@@ -259,15 +259,21 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
 BOOST_AUTO_TEST_CASE_TEMPLATE(test_pending_schedule_snapshot, SNAPSHOT_SUITE, snapshot_suites)
 {
    tester chain(setup_policy::full);
-   chain.produce_blocks
+   ilog("here 1");
+   auto block = chain.produce_block();
+   ilog("block: ${num}", ("num", block->block_num()));
    chain.create_account(N(snapshot));
-   chain.produce_blocks();
+   block = chain.produce_block();
+   ilog("block: ${num}", ("num", block->block_num()));
    auto res = chain.set_producers( {N(snapshot)} );
-   chain.produce_blocks();
+   block = chain.produce_block();
+   ilog("block: ${num}", ("num", block->block_num()));
    chain.control->abort_block();
+   ilog("here 2");
 
    const auto& gpo = chain.control->get_global_properties();
 
+   ilog("here 3");
    // create a new snapshot child
    auto writer = SNAPSHOT_SUITE::get_writer();
    chain.control->write_snapshot(writer);
