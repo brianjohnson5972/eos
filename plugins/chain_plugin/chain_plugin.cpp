@@ -836,7 +836,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
             else {
                if( my->chain_id ) {
                   EOS_ASSERT( *my->chain_id == genesis_file.compute_chain_id(), plugin_config_exception,
-                              "Genesis state's chain id provided via command line arguments does not match the existing chain id in the ${source}. "
+                              "Genesis state's chain id provided via command line arguments does not match the chain id in the ${source}. "
                               "It is not necessary to provide a genesis state argument when loading a snapshot.", ("source", my->chain_id_source)
                   );
                }
