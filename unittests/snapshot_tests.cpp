@@ -161,6 +161,103 @@ BOOST_AUTO_TEST_SUITE(snapshot_tests)
 
 using snapshot_suites = boost::mpl::list<variant_snapshot_suite, buffered_snapshot_suite>;
 
+namespace {
+   void variant_diff_helper(const fc::variant& lhs, const fc::variant& rhs, std::function<void(const std::string&, const fc::variant&, const fc::variant&)>&& out){
+      if (lhs.get_type() != rhs.get_type()) {
+         out("", lhs, rhs);
+      } else if (lhs.is_object() ) {
+         const auto& l_obj = lhs.get_object();
+         const auto& r_obj = rhs.get_object();
+         static const std::string sep = ".";
+
+         // test keys from LHS
+         std::set<std::string_view> keys;
+         for (const auto& entry: l_obj) {
+            const auto& l_val = entry.value();
+            const auto& r_iter = r_obj.find(entry.key());
+            if (r_iter == r_obj.end()) {
+               out(sep + entry.key(), l_val, fc::variant());
+            } else {
+               const auto& r_val = r_iter->value();
+               variant_diff_helper(l_val, r_val, [&out, &entry](const std::string& path, const fc::variant& lhs, const fc::variant& rhs){
+                  out(sep + entry.key() + path, lhs, rhs);
+               });
+            }
+
+            keys.insert(entry.key());
+         }
+
+         // print keys in RHS that were not tested
+         for (const auto& entry: r_obj) {
+            if (keys.find(entry.key()) != keys.end()) {
+               continue;
+            }
+            const auto& r_val = entry.value();
+            out(sep + entry.key(), fc::variant(), r_val);
+         }
+      } else if (lhs.is_array()) {
+         const auto& l_arr = lhs.get_array();
+         const auto& r_arr = rhs.get_array();
+
+         // diff common
+         auto common_count = std::min(l_arr.size(), r_arr.size());
+         for (size_t idx = 0; idx < common_count; idx++) {
+            const auto& l_val = l_arr.at(idx);
+            const auto& r_val = r_arr.at(idx);
+            variant_diff_helper(l_val, r_val, [&](const std::string& path, const fc::variant& lhs, const fc::variant& rhs){
+               out( std::string("[") + std::to_string(idx) + std::string("]") + path, lhs, rhs);
+            });
+         }
+
+         // print lhs additions
+         for (size_t idx = common_count; idx < lhs.size(); idx++) {
+            const auto& l_val = l_arr.at(idx);
+            out( std::string("[") + std::to_string(idx) + std::string("]"), l_val, fc::variant());
+         }
+
+         // print rhs additions
+         for (size_t idx = common_count; idx < rhs.size(); idx++) {
+            const auto& r_val = r_arr.at(idx);
+            out( std::string("[") + std::to_string(idx) + std::string("]"), fc::variant(), r_val);
+         }
+
+      } else if (!(lhs == rhs)) {
+         out("", lhs, rhs);
+      }
+   }
+
+   void print_variant_diff(const fc::variant& lhs, const fc::variant& rhs) {
+      variant_diff_helper(lhs, rhs, [](const std::string& path, const fc::variant& lhs, const fc::variant& rhs){
+         std::cout << path << std::endl;
+         if (!lhs.is_null()) {
+            std::cout << " < " << fc::json::to_pretty_string(lhs) << std::endl;
+         }
+
+         if (!rhs.is_null()) {
+            std::cout << " > " << fc::json::to_pretty_string(rhs) << std::endl;
+         }
+      });
+   }
+
+   template <typename SNAPSHOT_SUITE>
+   void verify_integrity_hash(const controller& lhs, const controller& rhs) {
+      const auto lhs_integrity_hash = lhs.calculate_integrity_hash();
+      const auto rhs_integrity_hash = rhs.calculate_integrity_hash();
+      if (std::is_same_v<SNAPSHOT_SUITE, variant_snapshot_suite> && lhs_integrity_hash.str() != rhs_integrity_hash.str()) {
+         auto lhs_latest_writer = SNAPSHOT_SUITE::get_writer();
+         lhs.write_snapshot(lhs_latest_writer);
+         auto lhs_latest = SNAPSHOT_SUITE::finalize(lhs_latest_writer);
+
+         auto rhs_latest_writer = SNAPSHOT_SUITE::get_writer();
+         rhs.write_snapshot(rhs_latest_writer);
+         auto rhs_latest = SNAPSHOT_SUITE::finalize(rhs_latest_writer);
+
+         print_variant_diff(lhs_latest, rhs_latest);
+      }
+      BOOST_REQUIRE_EQUAL(lhs_integrity_hash.str(), rhs_integrity_hash.str());
+   }
+}
+
 BOOST_AUTO_TEST_CASE_TEMPLATE(test_exhaustive_snapshot, SNAPSHOT_SUITE, snapshot_suites)
 {
    tester chain;
@@ -260,85 +357,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
    // replay the block log from the snapshot child, from the snapshot
    snapshotted_tester replay_chain(chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), 2, 1);
    BOOST_REQUIRE_EQUAL(expected_post_integrity_hash.str(), snap_chain.control->calculate_integrity_hash().str());
-}
-
-namespace {
-   void variant_diff_helper(const fc::variant& lhs, const fc::variant& rhs, std::function<void(const std::string&, const fc::variant&, const fc::variant&)>&& out){
-      if (lhs.get_type() != rhs.get_type()) {
-         out("", lhs, rhs);
-      } else if (lhs.is_object() ) {
-         const auto& l_obj = lhs.get_object();
-         const auto& r_obj = rhs.get_object();
-         static const std::string sep = ".";
-
-         // test keys from LHS
-         std::set<std::string_view> keys;
-         for (const auto& entry: l_obj) {
-            const auto& l_val = entry.value();
-            const auto& r_iter = r_obj.find(entry.key());
-            if (r_iter == r_obj.end()) {
-               out(sep + entry.key(), l_val, fc::variant());
-            } else {
-               const auto& r_val = r_iter->value();
-               variant_diff_helper(l_val, r_val, [&out, &entry](const std::string& path, const fc::variant& lhs, const fc::variant& rhs){
-                  out(sep + entry.key() + path, lhs, rhs);
-               });
-            }
-
-            keys.insert(entry.key());
-         }
-
-         // print keys in RHS that were not tested
-         for (const auto& entry: r_obj) {
-            if (keys.find(entry.key()) != keys.end()) {
-               continue;
-            }
-            const auto& r_val = entry.value();
-            out(sep + entry.key(), fc::variant(), r_val);
-         }
-      } else if (lhs.is_array()) {
-         const auto& l_arr = lhs.get_array();
-         const auto& r_arr = rhs.get_array();
-
-         // diff common
-         auto common_count = std::min(l_arr.size(), r_arr.size());
-         for (size_t idx = 0; idx < common_count; idx++) {
-            const auto& l_val = l_arr.at(idx);
-            const auto& r_val = r_arr.at(idx);
-            variant_diff_helper(l_val, r_val, [&](const std::string& path, const fc::variant& lhs, const fc::variant& rhs){
-               out( std::string("[") + std::to_string(idx) + std::string("]") + path, lhs, rhs);
-            });
-         }
-
-         // print lhs additions
-         for (size_t idx = common_count; idx < lhs.size(); idx++) {
-            const auto& l_val = l_arr.at(idx);
-            out( std::string("[") + std::to_string(idx) + std::string("]"), l_val, fc::variant());
-         }
-
-         // print rhs additions
-         for (size_t idx = common_count; idx < rhs.size(); idx++) {
-            const auto& r_val = r_arr.at(idx);
-            out( std::string("[") + std::to_string(idx) + std::string("]"), fc::variant(), r_val);
-         }
-
-      } else if (!(lhs == rhs)) {
-         out("", lhs, rhs);
-      }
-   }
-
-   void print_variant_diff(const fc::variant& lhs, const fc::variant& rhs) {
-      variant_diff_helper(lhs, rhs, [](const std::string& path, const fc::variant& lhs, const fc::variant& rhs){
-         std::cout << path << std::endl;
-         if (!lhs.is_null()) {
-            std::cout << " < " << fc::json::to_pretty_string(lhs) << std::endl;
-         }
-
-         if (!rhs.is_null()) {
-            std::cout << " > " << fc::json::to_pretty_string(rhs) << std::endl;
-         }
-      });
-   }
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
 }
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(test_compatible_versions, SNAPSHOT_SUITE, snapshot_suites)
