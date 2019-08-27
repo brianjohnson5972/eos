@@ -384,6 +384,7 @@ namespace eosio { namespace testing {
 
       static controller::config default_config(fc::temp_directory& tempdir) {
          controller::config vcfg;
+         ilog("validating_tester default_config blocks_dir: ${bd}", ("bd", tempdir.path().generic_string()));
          vcfg.blocks_dir      = tempdir.path() / std::string("v_").append(config::default_blocks_dir_name);
          vcfg.state_dir  = tempdir.path() /  std::string("v_").append(config::default_state_dir_name);
          vcfg.state_size = 1024*1024*8;
@@ -422,6 +423,7 @@ namespace eosio { namespace testing {
                     && config.state_dir.filename().generic_string() != ".", "invalid path names in controller::config" );
 
          vcfg = config;
+         ilog("validating_tester blocks_dir: ${bd}", ("bd", vcfg.blocks_dir.generic_string()));
          vcfg.blocks_dir = vcfg.blocks_dir.parent_path() / std::string("v_").append( vcfg.blocks_dir.filename().generic_string() );
          vcfg.state_dir  = vcfg.state_dir.parent_path() / std::string("v_").append( vcfg.state_dir.filename().generic_string() );
 
