@@ -150,6 +150,7 @@ namespace eosio { namespace testing {
    }
 
    void base_tester::init(const setup_policy policy, db_read_mode read_mode) {
+      ilog("base_tester init blocks_dir: ${bd}", ("bd", tempdir.path().generic_string()));
       cfg.blocks_dir      = tempdir.path() / config::default_blocks_dir_name;
       cfg.state_dir  = tempdir.path() / config::default_state_dir_name;
       cfg.state_size = 1024*1024*8;

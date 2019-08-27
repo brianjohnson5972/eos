@@ -831,6 +831,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
             }
             else {
                if( my->chain_id ) {
+                  ilog("REMOVE chain id: ${ci}, genesis chain id: ${gci}", ("ci", *my->chain_id)("gci",genesis_file.compute_chain_id()));
                   EOS_ASSERT( *my->chain_id == genesis_file.compute_chain_id(), plugin_config_exception,
                               "Genesis state's chain id provided via command line arguments does not match the chain id in the ${source}. "
                               "It is not necessary to provide a genesis state argument when loading a snapshot.", ("source", my->chain_id_source)
@@ -845,8 +846,11 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
 
          if( options.count( "chain-id" ) ) {
             auto ci = options.at( "chain-id" );
+            ilog("chain-id");
+            ilog("chain-id passed ${ci}",("ci", ci.as<string>()));
             auto get_chain_id = [chain_id=ci.as<string>()]() {
                try {
+                  ilog("chain-id: ${ci}",("ci", chain_id));
                   return fc::json::from_string(chain_id).as<chain_id_type>();
                } catch ( fc::exception& e ) {
                   elog("Malformed chain id");
@@ -854,6 +858,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
                }};
             const chain_id_type passed_chain_id = get_chain_id();
             if( my->chain_id ) {
+               ilog("REMOVE chain id: ${ci}, passed_chain_id: ${gci}", ("ci", *my->chain_id)("gci",passed_chain_id));
                EOS_ASSERT( *my->chain_id == passed_chain_id, plugin_config_exception,
                            "chain id provided via command line arguments does not match the existing chain id in the ${source}. "
                            "It is not necessary to provide a chain id argument when loading a snapshot.", ("source", my->chain_id_source)
@@ -934,6 +939,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
          if( options.count( "chain-id" )) {
             auto get_chain_id = [chain_id=options.at( "chain-id" ).as<string>()]() {
                try {
+                  ilog("chain-id: ${ci}",("ci", chain_id));
                   return fc::json::from_string(chain_id).as<chain_id_type>();
                } catch ( fc::exception& e ) {
                   elog("Malformed chain id");
@@ -941,6 +947,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
                }};
             const chain_id_type passed_chain_id = get_chain_id();
             if (my->chain_id) {
+               ilog("REMOVE chain id: ${ci}, passed_chain_id: ${gci}", ("ci", *my->chain_id)("gci",passed_chain_id));
                EOS_ASSERT( *my->chain_id == passed_chain_id, plugin_config_exception,
                            "chain id provided via command line arguments does not match the existing chain id in the ${source}. "
                            "Providing a chain id argument is not required.", ("source", my->chain_id_source)
@@ -950,6 +957,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
                EOS_ASSERT( my->chain_config->genesis, plugin_config_exception,
                            "Must provide \"--genesis-json\" option since no existing block log."
                );
+               ilog("REMOVE my->chain_config->genesis->compute_chain_id(): ${ci}, passed_chain_id: ${gci}", ("ci", my->chain_config->genesis->compute_chain_id())("gci",passed_chain_id));
                EOS_ASSERT( my->chain_config->genesis->compute_chain_id() == passed_chain_id, plugin_config_exception,
                            "chain id provided via command line arguments does not match the existing chain id in the default genesis state. "
                            "Providing a chain id argument is not required."
@@ -984,6 +992,8 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
                         "It is not necessary to provide genesis state arguments when a blocks.log file already exists."
             );
          }
+
+         ilog("chain id set to: ${ci} by ${source}", ("ci", my->chain_id)("source", my->chain_id_source));
       }
 
       if ( options.count("read-mode") ) {
@@ -1004,6 +1014,7 @@ void chain_plugin::plugin_initialize(const variables_map& options) {
       auto actual_chain_id = my->chain->get_chain_id();
       if( !my->chain_id ) {
          my->chain_id.emplace( actual_chain_id);
+         ilog("chain id now set to: ${ci}", ("ci", my->chain_id));
       }
       else {
          EOS_ASSERT( *my->chain_id == actual_chain_id, plugin_config_exception,

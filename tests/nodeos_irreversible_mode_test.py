@@ -27,7 +27,7 @@ errorExit = Utils.errorExit
 cmdError = Utils.cmdError
 relaunchTimeout = 10
 numOfProducers = 4
-totalNodes = 10
+totalNodes = 12
 
 # Parse command line arguments
 args = TestHelper.parse_args({"-v","--clean-run","--dump-error-details","--leave-running","--keep-logs"})
@@ -188,18 +188,22 @@ try:
    # This wrapper function will resurrect the node to be tested, and shut it down by the end of the test
    def executeTest(nodeIdOfNodeToTest, runTestScenario):
       testResult = False
+      resultMsg = None
       try:
+         Print("Running: {} on node_#{}".format(runTestScenario.__name__, nodeIdOfNodeToTest))
          # Relaunch killed node so it can be used for the test
          nodeToTest = cluster.getNode(nodeIdOfNodeToTest)
          relaunchNode(nodeToTest, nodeIdOfNodeToTest, relaunchAssertMessage="Fail to relaunch before running test scenario")
 
          # Run test scenario
          runTestScenario(nodeIdOfNodeToTest, nodeToTest)
-         testResultMsgs.append("!!!TEST CASE #{} ({}) IS SUCCESSFUL".format(nodeIdOfNodeToTest, runTestScenario.__name__))
+         resultMsg = "!!!TEST CASE #{} ({}) IS SUCCESSFUL".format(nodeIdOfNodeToTest, runTestScenario.__name__)
          testResult = True
       except Exception as e:
-         testResultMsgs.append("!!!BUG IS CONFIRMED ON TEST CASE #{} ({}): {}".format(nodeIdOfNodeToTest, runTestScenario.__name__, e))
+         resultMsg = "!!!BUG IS CONFIRMED ON TEST CASE #{} ({}): {}".format(nodeIdOfNodeToTest, runTestScenario.__name__, e)
       finally:
+         testResultMsgs.append(resultMsg)
+         Print("{}".format(resultMsg))
          # Kill node after use
          if not nodeToTest.killed: nodeToTest.kill(signal.SIGTERM)
       return testResult
@@ -338,6 +342,19 @@ try:
    #              and the head and lib should be advancing after some blocks produced
    #              and forkdb head, head, and lib should stay the same after relaunch
    def switchToSpecModeWithIrrModeSnapshot(nodeIdOfNodeToTest, nodeToTest):
+      switchToSpecModeWithIrrModeSnapshotWithOptions(nodeIdOfNodeToTest, nodeToTest);
+
+   # 10th test case: Switch to speculative mode while using irreversible mode snapshots and using backed up speculative blocks
+   # Expectation: Node replays and launches successfully
+   #              and the head and lib should be advancing after some blocks produced
+   #              and forkdb head, head, and lib should stay the same after relaunch
+   def switchToSpecModeWithIrrModeSnapshotNoGenesis(nodeIdOfNodeToTest, nodeToTest):
+      switchToSpecModeWithIrrModeSnapshotWithOptions(nodeIdOfNodeToTest, nodeToTest, addSwapRemoveFlags={"--genesis-json" : None});
+
+   # Expectation: Node replays and launches successfully
+   #              and the head and lib should be advancing after some blocks produced
+   #              and forkdb head, head, and lib should stay the same after relaunch
+   def switchToSpecModeWithIrrModeSnapshotWithOptions(nodeIdOfNodeToTest, nodeToTest, addSwapRemoveFlags={}):
       try:
          # Kill node and backup blocks directory of speculative mode
          headLibAndForkDbHeadBeforeShutdown = getHeadLibAndForkDbHead(nodeToTest)
@@ -353,7 +370,8 @@ try:
          # Start from clean data dir, recover back up blocks, and then relaunch with irreversible snapshot
          removeState(nodeIdOfNodeToTest)
          recoverBackedupBlksDir(nodeIdOfNodeToTest) # this function will delete the existing blocks dir first
-         relaunchNode(nodeToTest, nodeIdOfNodeToTest, chainArg=" --snapshot {}".format(getLatestSnapshot(nodeIdOfNodeToTest)), addSwapRemoveFlags={"--read-mode": "speculative"})
+         addSwapRemoveFlags["--read-mode"] = "speculative"
+         relaunchNode(nodeToTest, nodeIdOfNodeToTest, chainArg=" --snapshot {}".format(getLatestSnapshot(nodeIdOfNodeToTest)), addSwapRemoveFlags=addSwapRemoveFlags)
          confirmHeadLibAndForkDbHeadOfSpecMode(nodeToTest)
          # Ensure it automatically replays "reversible blocks", i.e. head lib and fork db should be the same
          headLibAndForkDbHeadAfterRelaunch = getHeadLibAndForkDbHead(nodeToTest)
