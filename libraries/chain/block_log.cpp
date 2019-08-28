@@ -307,7 +307,7 @@ namespace eosio { namespace chain {
       version = 0; // version of 0 is invalid; it indicates that subsequent data was not properly written to the block log
       first_block_num = first_bnum;
 
-      block_file.block_file.seek_end(0);
+      block_file.seek_end(0);
       block_file.write((char*)&version, sizeof(version));
       block_file.write((char*)&first_block_num, sizeof(first_block_num));
 
@@ -331,9 +331,9 @@ namespace eosio { namespace chain {
 
       // going back to write correct version to indicate that all block log header data writes completed successfully
       version = block_log::max_supported_version;
-      block_file.seekp( 0 );
+      block_file.seek( 0 );
       block_file.write( (char*)&version, sizeof(version) );
-      block_file.seekp( pos );
+      block_file.seek( pos );
       flush();
    }
 
@@ -354,7 +354,7 @@ namespace eosio { namespace chain {
       block_file << chain_id;
    }
 
-   std::pair<signed_block_ptr, uint64_t> block_log::read_block(uint64_t pos)const {
+   signed_block_ptr block_log::read_block(uint64_t pos)const {
       my->check_open_files();
 
       my->block_file.seek(pos);

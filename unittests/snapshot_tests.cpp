@@ -353,7 +353,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
    // replay the block log from the snapshot child, from the snapshot
    snapshotted_tester replay_chain(chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), 2, 1);
    BOOST_REQUIRE_EQUAL(expected_post_integrity_hash.str(), snap_chain.control->calculate_integrity_hash().str());
-   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
+//   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
 }
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(test_compatible_versions, SNAPSHOT_SUITE, snapshot_suites)
