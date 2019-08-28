@@ -323,7 +323,6 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
    }
 
    chain.control->abort_block();
-   auto expected_pre_integrity_hash = chain.control->calculate_integrity_hash();
 
    // create a new snapshot child
    auto writer = SNAPSHOT_SUITE::get_writer();
@@ -332,7 +331,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
 
    // create a new child at this snapshot
    snapshotted_tester snap_chain(chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), 1);
-   BOOST_REQUIRE_EQUAL(expected_pre_integrity_hash.str(), snap_chain.control->calculate_integrity_hash().str());
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *snap_chain.control);
 
    // push more blocks to build up a block log
    for (int itr = 0; itr < post_snapshot_block_count; itr++) {
@@ -347,13 +346,26 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
 
    // verify the hash at the end
    chain.control->abort_block();
-   auto expected_post_integrity_hash = chain.control->calculate_integrity_hash();
-   BOOST_REQUIRE_EQUAL(expected_post_integrity_hash.str(), snap_chain.control->calculate_integrity_hash().str());
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *snap_chain.control);
 
    // replay the block log from the snapshot child, from the snapshot
    snapshotted_tester replay_chain(chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), 2, 1);
-   BOOST_REQUIRE_EQUAL(expected_post_integrity_hash.str(), snap_chain.control->calculate_integrity_hash().str());
-//   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
+   const auto replay_head = replay_chain.control->head_block_num();
+   const auto snap_head = snap_chain.control->head_block_num();
+   const auto snap_lib = snap_chain.control->last_irreversible_block_num();
+   BOOST_REQUIRE_EQUAL(replay_head, snap_lib);
+   for (auto block_num = replay_head + 1; block_num <= snap_head; ++block_num) {
+      auto block = snap_chain.control->fetch_block_by_number(block_num);
+      replay_chain.push_block(block);
+   }
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
+
+   auto block = chain.produce_block();
+   chain.control->abort_block();
+   snap_chain.push_block(block);
+   replay_chain.push_block(block);
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *snap_chain.control);
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
 }
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(test_compatible_versions, SNAPSHOT_SUITE, snapshot_suites)
@@ -368,35 +380,21 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_compatible_versions, SNAPSHOT_SUITE, snapshot
    chain.set_abi(N(snapshot), contracts::snapshot_test_abi().data());
    chain.produce_blocks(1);
    chain.control->abort_block();
-   ///< End deterministic code to generate blockchain for comparison
-   auto base_integrity_value = chain.control->calculate_integrity_hash();
-
-   // create a latest snapshot
-   auto base_writer = SNAPSHOT_SUITE::get_writer();
-   chain.control->write_snapshot(base_writer);
-   auto base = SNAPSHOT_SUITE::finalize(base_writer);
 
    {
       static_assert(chain_snapshot_header::minimum_compatible_version <= 2, "version 2 unit test is no longer needed.  Please clean up data files");
       auto v2 = SNAPSHOT_SUITE::template load_from_file<snapshots::snap_v2>();
       snapshotted_tester v2_tester(chain.get_config(), SNAPSHOT_SUITE::get_reader(v2), 0);
-      auto v2_integrity_value = v2_tester.control->calculate_integrity_hash();
-      BOOST_CHECK_EQUAL(v2_integrity_value.str(), base_integrity_value.str());
+      verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *v2_tester.control);
 
       // create a latest snapshot
       auto latest_writer = SNAPSHOT_SUITE::get_writer();
       v2_tester.control->write_snapshot(latest_writer);
       auto latest = SNAPSHOT_SUITE::finalize(latest_writer);
 
-      if (std::is_same_v<SNAPSHOT_SUITE, variant_snapshot_suite> && v2_integrity_value.str() != base_integrity_value.str()) {
-         print_variant_diff(base, latest);
-      }
-
       // load the latest snapshot
       snapshotted_tester latest_tester(chain.get_config(), SNAPSHOT_SUITE::get_reader(latest), 1);
-      auto latest_integrity_value = latest_tester.control->calculate_integrity_hash();
-
-      BOOST_REQUIRE_EQUAL(v2_integrity_value.str(), latest_integrity_value.str());
+      verify_integrity_hash<SNAPSHOT_SUITE>(*v2_tester.control, *latest_tester.control);
    }
 }
 
@@ -418,7 +416,6 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_pending_schedule_snapshot, SNAPSHOT_SUITE, sn
    BOOST_REQUIRE_EQUAL(block->block_num(), 5);
    chain.control->abort_block();
    ///< End deterministic code to generate blockchain for comparison
-   auto base_integrity_value = chain.control->calculate_integrity_hash();
 
    BOOST_REQUIRE_EQUAL(gpo.proposed_schedule.version, 1);
    BOOST_REQUIRE_EQUAL(gpo.proposed_schedule.producers.size(), 1);
@@ -427,8 +424,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_pending_schedule_snapshot, SNAPSHOT_SUITE, sn
    static_assert(chain_snapshot_header::minimum_compatible_version <= 2, "version 2 unit test is no longer needed.  Please clean up data files");
    auto v2 = SNAPSHOT_SUITE::template load_from_file<snapshots::snap_v2_prod_sched>();
    snapshotted_tester v2_tester(chain.get_config(), SNAPSHOT_SUITE::get_reader(v2), 0);
-   auto v2_integrity_value = v2_tester.control->calculate_integrity_hash();
-   BOOST_REQUIRE_EQUAL(v2_integrity_value.str(), base_integrity_value.str());
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *v2_tester.control);
 
    // create a latest version snapshot from the loaded v2 snapthos
    auto latest_from_v2_writer = SNAPSHOT_SUITE::get_writer();
@@ -437,18 +433,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_pending_schedule_snapshot, SNAPSHOT_SUITE, sn
 
    // load the latest snapshot in a new tester and compare integrity
    snapshotted_tester latest_from_v2_tester(chain.get_config(), SNAPSHOT_SUITE::get_reader(latest_from_v2), 1);
-   auto latest_from_v2_integrity_value = latest_from_v2_tester.control->calculate_integrity_hash();
-   BOOST_REQUIRE_EQUAL(v2_integrity_value.str(), latest_from_v2_integrity_value.str());
-
-
-   // take advantage of variant compare to possibly identify where snapshot disparities come from
-   if (std::is_same_v<SNAPSHOT_SUITE, variant_snapshot_suite> && latest_from_v2_integrity_value.str() != base_integrity_value.str()) {
-      // create a latest snapshot
-      auto latest_writer = SNAPSHOT_SUITE::get_writer();
-      chain.control->write_snapshot(latest_writer);
-      auto chain_latest = SNAPSHOT_SUITE::finalize(latest_writer);
-      print_variant_diff(chain_latest, latest_from_v2);
-   }
+   verify_integrity_hash<SNAPSHOT_SUITE>(*v2_tester.control, *latest_from_v2_tester.control);
 
    const auto& v2_gpo = v2_tester.control->get_global_properties();
    BOOST_REQUIRE_EQUAL(v2_gpo.proposed_schedule.version, 1);
@@ -464,10 +449,10 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_pending_schedule_snapshot, SNAPSHOT_SUITE, sn
 
    // push that block to all sub testers and validate the integrity of the database after it.
    v2_tester.push_block(new_block);
-   BOOST_REQUIRE_EQUAL(integrity_value.str(), v2_tester.control->calculate_integrity_hash().str());
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *v2_tester.control);
 
    latest_from_v2_tester.push_block(new_block);
-   BOOST_REQUIRE_EQUAL(integrity_value.str(), latest_from_v2_tester.control->calculate_integrity_hash().str());
+   verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *latest_from_v2_tester.control);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
