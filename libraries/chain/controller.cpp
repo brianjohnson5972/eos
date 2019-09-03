@@ -535,6 +535,9 @@ struct controller_impl {
             read_from_snapshot( snapshot, 0, std::numeric_limits<uint32_t>::max() );
             lib_num = head->block_num;
             if (lib_num == 0) {
+               EOS_ASSERT( conf.genesis, plugin_config_exception,
+                           "Snapshot controller head at block number 0, but genesis state was not provided."
+                           " Must pass \"--genesis-json\" to provide the genesis state." );
                blog.reset( *conf.genesis, signed_block_ptr() );
             }
             else {
@@ -565,6 +568,9 @@ struct controller_impl {
                );
                lib_num = blog.head()->block_num();
             } else {
+               EOS_ASSERT( conf.genesis, plugin_config_exception,
+                           "Snapshot controller head at block number 0, but genesis state was not provided."
+                           " Must pass \"--genesis-json\" to provide the genesis state." );
                blog.reset( *conf.genesis, head->block );
             }
          } else {
@@ -938,6 +944,9 @@ struct controller_impl {
    void create_native_account( account_name name, const authority& owner, const authority& active, bool is_privileged = false ) {
       db.create<account_object>([&](auto& a) {
          a.name = name;
+         EOS_ASSERT( conf.genesis, plugin_config_exception,
+                     "Snapshot controller head at block number 0, but genesis state was not provided."
+                     " Must pass \"--genesis-json\" to provide the genesis state." );
          a.creation_date = conf.genesis->initial_timestamp;
 
          if( name == config::system_account_name ) {
@@ -983,6 +992,9 @@ struct controller_impl {
          bs.block_id = head->id;
       });
 
+      EOS_ASSERT( conf.genesis, plugin_config_exception,
+                  "Snapshot controller head at block number 0, but genesis state was not provided."
+                  " Must pass \"--genesis-json\" to provide the genesis state." );
       conf.genesis->initial_configuration.validate();
       db.create<global_property_object>([&](auto& gpo ){
          gpo.configuration = conf.genesis->initial_configuration;

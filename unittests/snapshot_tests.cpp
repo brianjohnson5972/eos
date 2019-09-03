@@ -49,14 +49,28 @@ controller::config copy_config_and_files(const controller::config& config, int o
 class snapshotted_tester : public base_tester {
 public:
    enum config_file_handling { dont_copy_config_files, copy_config_files };
-   snapshotted_tester(controller::config config, const snapshot_reader_ptr& snapshot, int ordinal, config_file_handling copy_files_from_config = config_file_handling::dont_copy_config_files) {
+   snapshotted_tester(controller::config config, const snapshot_reader_ptr& snapshot, int ordinal,
+           config_file_handling copy_files_from_config = config_file_handling::dont_copy_config_files) {
+      FC_ASSERT(config.genesis, "Must pass in chain_id if config does not have genesis");
+      _init(config, snapshot, ordinal, fc::optional<chain_id_type>(config.genesis->compute_chain_id()), copy_files_from_config);
+   }
+
+   snapshotted_tester(controller::config config, const snapshot_reader_ptr& snapshot, int ordinal,
+                      const fc::optional<chain_id_type>& chain_id,
+                      config_file_handling copy_files_from_config = config_file_handling::dont_copy_config_files) {
+      _init(config, snapshot, ordinal, chain_id, copy_files_from_config);
+   }
+
+   void _init(controller::config config, const snapshot_reader_ptr& snapshot, int ordinal,
+             const fc::optional<chain_id_type>& chain_id,
+             config_file_handling copy_files_from_config = config_file_handling::dont_copy_config_files) {
       FC_ASSERT(config.blocks_dir.filename().generic_string() != "."
-         && config.state_dir.filename().generic_string() != ".", "invalid path names in controller::config");
+                && config.state_dir.filename().generic_string() != ".", "invalid path names in controller::config");
 
       controller::config copied_config = (copy_files_from_config == copy_config_files)
-              ? copy_config_and_files(config, ordinal) : copy_config(config, ordinal);
+                                         ? copy_config_and_files(config, ordinal) : copy_config(config, ordinal);
 
-      init(copied_config, snapshot);
+      init(copied_config, snapshot, chain_id);
    }
 
    signed_block_ptr produce_block( fc::microseconds skip_time = fc::milliseconds(config::block_interval_ms) )override {
@@ -364,7 +378,8 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
 
    // replay the block log from the snapshot child, from the snapshot
    using config_file_handling = snapshotted_tester::config_file_handling;
-   snapshotted_tester replay_chain(snap_chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), ordinal++, config_file_handling::copy_config_files);
+   chain_id_type chain_id = chain.control->get_chain_id();
+   snapshotted_tester replay_chain(snap_chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), ordinal++, chain_id, config_file_handling::copy_config_files);
    const auto replay_head = replay_chain.control->head_block_num();
    auto snap_head = snap_chain.control->head_block_num();
    BOOST_REQUIRE_EQUAL(replay_head, snap_chain.control->last_irreversible_block_num());
@@ -381,7 +396,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
    verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *snap_chain.control);
    verify_integrity_hash<SNAPSHOT_SUITE>(*chain.control, *replay_chain.control);
 
-   snapshotted_tester replay2_chain(snap_chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), ordinal++, config_file_handling::copy_config_files);
+   snapshotted_tester replay2_chain(snap_chain.get_config(), SNAPSHOT_SUITE::get_reader(snapshot), ordinal++, chain_id, config_file_handling::copy_config_files);
    const auto replay2_head = replay2_chain.control->head_block_num();
    snap_head = snap_chain.control->head_block_num();
    BOOST_REQUIRE_EQUAL(replay2_head, snap_chain.control->last_irreversible_block_num());
@@ -404,6 +419,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(test_replay_over_snapshot, SNAPSHOT_SUITE, snapsho
 
    // verifies that snap_chain's block_log does not have a genesis_state
    copied_config = copy_config_and_files(snap_chain.get_config(), ordinal++);
+   copied_config.genesis.emplace(*chain.get_config().genesis);
    try {
       tester from_chain_id_block_log_chain(copied_config);
       BOOST_FAIL("Should not be able to create new tester chain with block_log that does not start at block 1 "
