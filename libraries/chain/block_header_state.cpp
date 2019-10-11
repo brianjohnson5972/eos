@@ -235,9 +235,7 @@ namespace eosio { namespace chain {
       EOS_ASSERT( h.producer == producer, wrong_producer, "wrong producer specified" );
       EOS_ASSERT( h.schedule_version == active_schedule_version, producer_schedule_exception, "schedule_version in signed block is corrupted" );
 
-      //ilog("REMOVE  validate_and_extract_header_extensions");
       auto exts = h.validate_and_extract_header_extensions();
-      //ilog("REMOVE  validate_and_extract_header_extensions done");
 
       std::optional<producer_authority_schedule> maybe_new_producer_schedule;
       std::optional<digest_type> maybe_new_producer_schedule_hash;
@@ -261,11 +259,8 @@ namespace eosio { namespace chain {
          maybe_new_producer_schedule.emplace(new_producers);
       }
 
-      //ilog("REMOVE  get_new_producer_schedule");
       const auto new_producer_schedule = block_header::get_new_producer_schedule(exts);
-      //ilog("REMOVE  get_new_producer_schedule done");
       if ( new_producer_schedule ) {
-         //ilog("REMOVE  get_new_producer_schedule yes");
          EOS_ASSERT(wtmsig_enabled, producer_schedule_exception, "Block header producer_schedule_change_extension before activation of WTMsig Block Signatures" );
          EOS_ASSERT( !was_pending_promoted, producer_schedule_exception, "cannot set pending producer schedule in the same block in which pending was promoted to active" );
 
@@ -275,7 +270,6 @@ namespace eosio { namespace chain {
 
          maybe_new_producer_schedule_hash.emplace(digest_type::hash(*new_producer_schedule));
          maybe_new_producer_schedule.emplace(*new_producer_schedule);
-         //ilog("REMOVE  get_new_producer_schedule yes done");
       }
 
       protocol_feature_activation_set_ptr new_activated_protocol_features;

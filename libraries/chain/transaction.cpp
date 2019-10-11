@@ -117,12 +117,9 @@ flat_multimap<uint16_t, transaction_extension> transaction::validate_and_extract
 }
 
 fc::optional<deferred_transaction_generation_context> transaction::get_deferred_transaction_generation_context(const flat_multimap<uint16_t, transaction_extension>& exts) {
-   ilog("REMOVE get_deferred_transaction_generation_context size: ${s}, count: ${c}",("s",exts.size())("c",exts.count(deferred_transaction_generation_context::extension_id())));
    if (exts.count(deferred_transaction_generation_context::extension_id()) > 0) {
-      ilog("REMOVE get_deferred_transaction_generation_context 1");
       return exts.lower_bound(deferred_transaction_generation_context::extension_id())->second.get<deferred_transaction_generation_context>();
    }
-   ilog("REMOVE get_deferred_transaction_generation_context 2");
 
    return {};
 }
