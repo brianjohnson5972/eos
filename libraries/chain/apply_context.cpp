@@ -355,18 +355,18 @@ void apply_context::schedule_deferred_transaction( const uint128_t& sender_id, a
    if( control.is_builtin_activated( builtin_protocol_feature_t::no_duplicate_deferred_id ) ) {
       auto exts = trx.validate_and_extract_extensions();
       auto context = transaction::get_deferred_transaction_generation_context(exts);
-      if( context ) {
-         EOS_ASSERT(context->sender == receiver, ill_formed_deferred_transaction_generation_context,
+      if( context.first ) {
+         EOS_ASSERT(context.second.sender == receiver, ill_formed_deferred_transaction_generation_context,
                     "deferred transaction generaction context contains mismatching sender",
-                    ("expected", receiver)("actual", context->sender)
+                    ("expected", receiver)("actual", context.second.sender)
          );
-         EOS_ASSERT(context->sender_id == sender_id, ill_formed_deferred_transaction_generation_context,
+         EOS_ASSERT(context.second.sender_id == sender_id, ill_formed_deferred_transaction_generation_context,
                     "deferred transaction generaction context contains mismatching sender_id",
-                    ("expected", sender_id)("actual", context->sender_id)
+                    ("expected", sender_id)("actual", context.second.sender_id)
          );
-         EOS_ASSERT(context->sender_trx_id == trx_context.id, ill_formed_deferred_transaction_generation_context,
+         EOS_ASSERT(context.second.sender_trx_id == trx_context.id, ill_formed_deferred_transaction_generation_context,
                     "deferred transaction generaction context contains mismatching sender_trx_id",
-                    ("expected", trx_context.id)("actual", context->sender_trx_id)
+                    ("expected", trx_context.id)("actual", context.second.sender_trx_id)
          );
       } else {
          EOS_ASSERT(exts.size() == 0, invalid_transaction_extension,

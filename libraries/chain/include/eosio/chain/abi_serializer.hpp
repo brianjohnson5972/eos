@@ -1,5 +1,6 @@
 #pragma once
 #include <eosio/chain/abi_def.hpp>
+#include <eosio/chain/protocol_feature_manager.hpp>
 #include <eosio/chain/trace.hpp>
 #include <eosio/chain/exceptions.hpp>
 #include <fc/variant_object.hpp>
@@ -460,7 +461,9 @@ namespace impl {
          // process contents of block.transaction_extensions
          auto exts = trx.validate_and_extract_extensions();
          auto deferred_transaction_generation = transaction::get_deferred_transaction_generation_context(exts);
-         mvo("deferred_transaction_generation", deferred_transaction_generation);
+         if (deferred_transaction_generation.first) {
+            mvo("deferred_transaction_generation", deferred_transaction_generation.second);
+         }
 
          out(name, std::move(mvo));
       }
@@ -488,10 +491,21 @@ namespace impl {
 
          // process contents of block.header_extensions
          flat_multimap<uint16_t, block_header_extension> header_exts = block.validate_and_extract_header_extensions();
-         auto new_protocol_features = signed_block::get_new_protocol_feature_activation(header_exts);
-         mvo("new_protocol_features", new_protocol_features);
+         auto new_protocol_features = block_header::get_new_protocol_feature_activation(header_exts);
+         vector<variant> pf_array;
+         if ( new_protocol_features.first ) {
+            pf_array.reserve(new_protocol_features.second.protocol_features.size());
+            for (auto feature : new_protocol_features.second.protocol_features) {
+               mutable_variant_object feature_mvo;
+               add(feature_mvo, "feature_digest", feature, resolver, ctx);
+               pf_array.push_back(feature_mvo);
+            }
+            mvo("new_protocol_features", pf_array);
+         }
          const auto new_producer_schedule = block_header::get_new_producer_schedule(header_exts);
-         mvo("new_producer_schedule", new_producer_schedule);
+         if (new_producer_schedule.first) {
+            mvo("new_producer_schedule", new_producer_schedule.second);
+         }
 
          mvo("producer_signature", block.producer_signature);
          add(mvo, "transactions", block.transactions, resolver, ctx);
@@ -499,7 +513,9 @@ namespace impl {
          // process contents of block.block_extensions
          auto block_exts = block.validate_and_extract_extensions();
          auto additional_signatures = signed_block::get_additional_block_signatures(block_exts);
-         mvo("additional_signatures", additional_signatures);
+         if (additional_signatures.first) {
+            mvo("additional_signatures", additional_signatures.second);
+         }
 
          out(name, std::move(mvo));
       }
