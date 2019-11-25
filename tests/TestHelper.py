@@ -19,7 +19,7 @@ class AppArgs:
             self.choices=choices
             self.action=action
 
-    def add(self, flag, type, help, default, choices=None):
+    def add(self, flag, type, help, default=None, choices=None):
         arg=self.AppArg(flag, help, type=type, default=default, choices=choices)
         self.args.append(arg)
 
