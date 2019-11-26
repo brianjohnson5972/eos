@@ -1,3 +1,5 @@
+from datetime import datetime
+from datetime import timedelta
 import re
 import errno
 import subprocess
@@ -440,3 +442,208 @@ class Account(object):
     def __str__(self):
         return "Name: %s" % (self.name)
 
+
+###########################################################################################
+
+class BlockData(object):
+    # pylint: disable=too-few-public-methods
+
+    TimeFmt = '%Y-%m-%dT%H:%M:%S.%f'
+    SlotTime = 500
+    SlotTimeSec = SlotTime / 1000
+    SlotTimeLeeWaySec = SlotTimeSec / 5
+
+    def __init__(self, num, id, producer, time, received, lib, trxs, rcvOrProduced, previous):
+        self.num = num
+        self.id = id
+        self.producer = producer
+        self.time = time
+        self.received = received
+        self.delay = received - time
+        self.lib = lib
+        self.trxs = trxs
+        self.rcvOrProduced = rcvOrProduced
+        self.previous = previous
+
+        # time between the previous block being received last receive and this being received (will be set to delay for first block)
+        # time added or removed to the cummulative delay of the previous block
+        if previous is not None:
+            self.timePassing = self.time - previous.time
+            self.delayBetweenReceived = self.received - previous.received - self.timePassing
+            self.cummulativeDelayChange = self.delayBetweenReceived - previous.delayBetweenReceived
+            self.producerChanged = self.producer != previous.producer
+            self.libChanged = self.lib - previous.lib
+            self.producerSequence = 1 if self.producerChanged else previous.producerSequence + 1
+        else:
+            self.timePassing = timedelta(milliseconds = BlockData.SlotTime)
+            self.delayBetweenReceived = self.delay
+            self.cummulativeDelayChange = timedelta(milliseconds = 0)
+            self.producerChanged = True
+            self.libChanged = 0
+            self.producerSequence = 1
+
+
+    def __str__(self):
+        libChanged = "(+%d)" % (self.libChanged) if self.libChanged else ""
+        previousId = self.previous.id if self.previous is not None else "<first block in log>"
+        return "num: %s, id: %s, producer: %s (%d), time: %s, rcvd: %s, delay: %s sec, lib: %s%s, trxs: %s, slot: %s, dbr: %s sec, delta: %s, previous id: %s, %s" % \
+               (self.num, self.id, self.producer, self.producerSequence, self.time.strftime(BlockData.TimeFmt), self.received.strftime(BlockData.TimeFmt),
+                self.delay.total_seconds(), self.lib, libChanged, self.trxs, BlockData.numSlots(self.timePassing.total_seconds()), self.delayBetweenReceived.total_seconds(),
+                self.cummulativeDelayChange.total_seconds(), previousId, self.rcvOrProduced)
+
+    @staticmethod
+    def numSlots(timePassed):
+        return int((timePassed + BlockData.SlotTimeLeeWaySec) / BlockData.SlotTimeSec)
+
+###########################################################################################
+
+class NodeosLogBlockReader:
+
+    __lineStatusInterval = 5000
+    __blockStatusInterval = 500
+
+    def __init__(self, filename, forkAnalysisFilename=None, lineStatusInterval=__lineStatusInterval, blockStatusInterval=__blockStatusInterval):
+        assert os.path.exists(filename), Utils.Print("ERROR: file %s doesn't exist" % (filename))
+        Utils.Print("Opening: %s" % (filename))
+        self.filename = filename
+        self.file = open(filename)
+        self.forkAnalysisFile = open(forkAnalysisFilename, "w") if forkAnalysisFilename is not None else None
+        self.lineNum = 0
+        self.lib = None
+        self.blocks = []
+        self.blockRegex = re.compile(r' (\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\d\d\d) .* (Received|Produced) block (\w+)\.\.\. #(\d+) @ (\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\d\d\d) signed by ([1-5\.a-z]+) \[trxs: (\d+), lib: (\d+),')
+        self.lineStatusInterval = lineStatusInterval
+        self.blockStatusInterval = blockStatusInterval
+
+    def close(self):
+        self.file.close()
+        if self.forkAnalysisFile is not None:
+            self.forkAnalysisFile.close()
+
+    def next(self):
+        match = None
+        while match is None:
+            line = self.file.readline()
+            if len(line) == 0:
+                if Utils.Debug: Utils.Print("Finished file: %s, read %d lines" % (self.filename, self.lineNum))
+                return None
+            self.lineNum += 1
+            if Utils.Debug:
+                if self.lineNum % self.lineStatusInterval == 0:
+                    head = self.blocks[-1] if len(self.blocks) > 0 else None
+                    blockNumDesc = ", at block num: %d (%s), lib: %s" % (head.num, head.id, head.lib) if head is not None else ""
+                    Utils.Print("Read %d lines%s" % (self.lineNum, blockNumDesc))
+            match = self.blockRegex.search(line)
+
+        rcvTimeStr = match.group(1)
+        rcvOrProduced = match.group(2)
+        num = int(match.group(4))
+        id = match.group(3)
+        prodTimeStr = match.group(5)
+        producer = match.group(6)
+        trxs = int(match.group(7))
+        lib = int(match.group(8))
+        received = datetime.strptime(rcvTimeStr, BlockData.TimeFmt)
+        time = datetime.strptime(prodTimeStr, BlockData.TimeFmt)
+
+        toRemove = lib - self.lib if self.lib is not None else 0
+        blocksLen = len(self.blocks)
+        assert toRemove >= 0, Utils.Print("ERROR: Previous block had lib: %d, but new block has lib: %d.  It is not valid to have lib reduced ever. From line(%d): %s" % (self.lib, lib, self.lineNum, line))
+        if toRemove > 0:
+            assert blocksLen > toRemove + 1, Utils.Print("ERROR: Previous block had lib: %d, and new block has lib: %d, but there have only been %d blocks received since the previous lib. From line(%d): %s" % (self.lib, lib, blocksLen, self.lineNum, line))
+            assert self.blocks[toRemove].num == lib, Utils.Print("ERROR: Previous block had lib: %d, and new block has lib: %d, but received blocks are not consistent with that. %d blocks after last lib has block num: %d. From line(%d): %s" % (self.lib, lib, toRemove, self.blocks[toRemove].num, self.lineNum, line))
+            if Utils.Debug: Utils.Print("Moving lib from %s to %s" % (self.lib, lib))
+            if lib + 1 == num:
+                # handle corner case for single producer networks
+                self.blocks = self.blocks[toRemove:toRemove - 1]
+            else:
+                self.blocks = self.blocks[toRemove:]
+
+        blocksLen = len(self.blocks)
+        class ForkData:
+            def __init__(self):
+                self.accummulatedSlots = 0
+                self.expectedSlots = 0
+                self.trxs = 0
+                self.time = None
+
+            def add(self, block):
+                slots = BlockData.numSlots(block.timePassing.total_seconds())
+                self.accummulatedSlots += slots
+                self.expectedSlots += 1
+                self.trxs += block.trxs
+                if self.time is None:
+                    self.time = block.time
+
+            def missedSlots(self):
+                return self.accummulatedSlots - self.expectedSlots
+
+        printHeadForkAnalysis = None
+        if blocksLen > 1:
+            prevHead = self.blocks[-1].num
+
+            blockNumChange = num - prevHead
+            assert blockNumChange <= 1, Utils.Print("ERROR: Current block number indicates: %d, but the previous head was: %d, block numbers cannot skip. From line(%d): %s" %
+                                                    (num, prevHead, self.lineNum, line))
+
+            remainingBlocks = blocksLen + blockNumChange
+            assert self.lib is None and remainingBlocks > 0,\
+                   Utils.Print("ERROR: Current block number indicates: %d is the previous block, which is %d behind lib. From line(%d): %s" %
+                               (num - 1, remainingBlocks - 1, self.lineNum, line))
+
+            if blockNumChange < 1:
+                # remove 1 or more of trailing blocks so that
+                reverseIndex = blockNumChange - 1
+                if self.lib is None and reverseIndex * -1 >= blocksLen:
+                    if Utils.Debug: Utils.Print("Rolling head back from %d and dropping all previous blocks" %
+                                                (prevHead))
+                    if self.forkAnalysisFile:
+                        self.forkAnalysisFile.write("%s\nOld Fork: (dropping all %d ** not at lib yet)\n" % (Utils.FileDivider, blocksLen))
+                        for block in self.blocks:
+                            self.forkAnalysisFile.write("   %s\n" % (str(block)))
+                        self.forkAnalysisFile.write("New Fork:\n")
+                        printHeadForkAnalysis = ForkData()
+                    self.blocks = []
+                else:
+                    assert reverseIndex * -1 < blocksLen, \
+                           Utils.Print("ERROR: Current block number indicates: %d is the previous block, which is %d behind our current head and we don't have that many blocks. From line(%d): %s" %
+                                       (num - 1, reverseIndex * -1, self.lineNum, line))
+                    if Utils.Debug: Utils.Print("Rolling head back %d blocks from %d to %d (id: %s) and then adding this block on" %
+                                                (reverseIndex * -1, prevHead, self.blocks[reverseIndex - 1].num, self.blocks[reverseIndex - 1].id))
+                    if self.forkAnalysisFile:
+                        self.forkAnalysisFile.write("%s\nOld Fork (dropping %d):\n" % (Utils.FileDivider, reverseIndex * -1))
+                        printHeadForkAnalysis = ForkData()
+                        for block in self.blocks[reverseIndex:]:
+                            self.forkAnalysisFile.write("   %s\n" % (str(block)))
+                            printHeadForkAnalysis.add(block)
+                        self.forkAnalysisFile.write("New Fork:\n")
+                    self.blocks = self.blocks[:reverseIndex]
+
+        if Utils.Debug:
+            if num % self.blockStatusInterval == 0:
+                Utils.Print("At block num: %d" % (num))
+
+        previous = self.blocks[-1] if len(self.blocks) > 0 else None
+        current = BlockData(num, id, producer, time, received, lib, trxs, rcvOrProduced, previous)
+        self.blocks.append(current)
+        if (self.blocks[0].num == lib):
+            self.lib = lib
+        if printHeadForkAnalysis:
+            self.forkAnalysisFile.write("   %s\n" % (str(current)))
+            if printHeadForkAnalysis.accummulatedSlots > 0.0:
+                newForkSlots = BlockData.numSlots(current.timePassing.total_seconds())
+                if current.time < printHeadForkAnalysis.time:
+                    earlierLater = "earlier"
+                    newForkMissingSlots = newForkSlots - 1
+                else:
+                    earlierLater = "later"
+                    newForkMissingSlots = newForkSlots - printHeadForkAnalysis.accummulatedSlots - 1
+
+                self.forkAnalysisFile.write("\nOld Fork skipped %d slots and contained %d total transactions.\n" % (printHeadForkAnalysis.missedSlots(), printHeadForkAnalysis.trxs))
+                self.forkAnalysisFile.write("New Fork skipped %d slots and contained %d total transactions. It is %s than the old fork.\n" % (newForkMissingSlots, current.trxs, earlierLater))
+                trxsDiff = current.trxs - printHeadForkAnalysis.trxs
+                trxsPercent = int((trxsDiff / printHeadForkAnalysis.trxs) * 100)
+                lossGain = "loss" if trxsDiff < 0 else "gain"
+                self.forkAnalysisFile.write("%d transaction change. %d%% %s\n\n" % (trxsDiff, trxsPercent, lossGain))
+
+        return current
