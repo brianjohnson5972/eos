@@ -546,18 +546,32 @@ class NodeosLogBlockReader:
         received = datetime.strptime(rcvTimeStr, BlockData.TimeFmt)
         time = datetime.strptime(prodTimeStr, BlockData.TimeFmt)
 
-        toRemove = lib - self.lib if self.lib is not None else 0
+        # Utils.Print("\n\n")
         blocksLen = len(self.blocks)
+        assert blocksLen == 0 or num <= self.blocks[-1].num + 1,\
+            Utils.Print("ERROR: block number jumped from %d to %d. From line(%d): %s" % (self.blocks[-1].num, num, self.lineNum, line))
+        toRemove = 0
+        if self.lib is not None:
+            toRemove = lib - self.lib
+        elif blocksLen > 0 and lib > self.blocks[0].num:
+            toRemove = lib - self.blocks[0].num
+        block0 = str(self.blocks[0]) if blocksLen > 0 else "<no block 0>"
+        blockLast = str(self.blocks[-1]) if blocksLen > 1 else "<no block -1>"
+        # Utils.Print("This block ****")
+        # Utils.Print("  num: %d, id: %s, lib: %d, producer: %s" % (num, id, lib, producer))
+        assert self.lib is None or num >= self.lib, Utils.Print("ERROR: block num: %d is behind the lib: %d" % (num, lib))
+        # Utils.Print("ToRemove ****")
+        # Utils.Print("blockLen: %s, toRemove: %s, blocks[0]: %s, block[-1]: %s" % (blocksLen, toRemove, block0, blockLast))
         assert toRemove >= 0, Utils.Print("ERROR: Previous block had lib: %d, but new block has lib: %d.  It is not valid to have lib reduced ever. From line(%d): %s" % (self.lib, lib, self.lineNum, line))
         if toRemove > 0:
-            assert blocksLen > toRemove + 1, Utils.Print("ERROR: Previous block had lib: %d, and new block has lib: %d, but there have only been %d blocks received since the previous lib. From line(%d): %s" % (self.lib, lib, blocksLen, self.lineNum, line))
+            assert blocksLen >= toRemove + 1, Utils.Print("ERROR: Previous block had lib: %d, and new block has lib: %d, but there have only been %d blocks received since the previous lib. From line(%d): %s" % (self.lib, lib, blocksLen, self.lineNum, line))
             assert self.blocks[toRemove].num == lib, Utils.Print("ERROR: Previous block had lib: %d, and new block has lib: %d, but received blocks are not consistent with that. %d blocks after last lib has block num: %d. From line(%d): %s" % (self.lib, lib, toRemove, self.blocks[toRemove].num, self.lineNum, line))
             if Utils.Debug: Utils.Print("Moving lib from %s to %s" % (self.lib, lib))
-            if lib + 1 == num:
-                # handle corner case for single producer networks
-                self.blocks = self.blocks[toRemove:toRemove - 1]
-            else:
-                self.blocks = self.blocks[toRemove:]
+            # if lib + 1 == num:
+            #     # handle corner case for single producer networks
+            #     self.blocks = self.blocks[toRemove - 1:toRemove - 1]
+            # else:d
+            self.blocks = self.blocks[toRemove:]
 
         blocksLen = len(self.blocks)
         class ForkData:
@@ -578,6 +592,11 @@ class NodeosLogBlockReader:
             def missedSlots(self):
                 return self.accummulatedSlots - self.expectedSlots
 
+        block0 = str(self.blocks[0]) if blocksLen > 0 else "<no block 0>"
+        blockLast = str(self.blocks[-1]) if blocksLen > 1 else "<no block -1>"
+        # Utils.Print("Possible Rollback ****")
+        # Utils.Print("blockLen: %s, blocks[0]: %s, block[-1]: %s" % (blocksLen, block0, blockLast))
+
         printHeadForkAnalysis = None
         if blocksLen > 1:
             prevHead = self.blocks[-1].num
@@ -587,9 +606,10 @@ class NodeosLogBlockReader:
                                                     (num, prevHead, self.lineNum, line))
 
             remainingBlocks = blocksLen + blockNumChange
-            assert self.lib is None and remainingBlocks > 0,\
-                   Utils.Print("ERROR: Current block number indicates: %d is the previous block, which is %d behind lib. From line(%d): %s" %
-                               (num - 1, remainingBlocks - 1, self.lineNum, line))
+            # Utils.Print("num: %d, prevHead: %d, blocksLen: %d, blockNumChange: %d, remainingBlocks: %d" % (num, prevHead, blocksLen, blockNumChange, remainingBlocks))
+            assert self.lib is None or remainingBlocks > 0,\
+                   Utils.Print("ERROR: Current block number indicates %d is the previous block, previous head is block num %d, blocks length is %d. From line(%d): %s" %
+                               (num - 1, prevHead, blocksLen, self.lineNum, line))
 
             if blockNumChange < 1:
                 # remove 1 or more of trailing blocks so that
@@ -624,10 +644,20 @@ class NodeosLogBlockReader:
                 Utils.Print("At block num: %d" % (num))
 
         previous = self.blocks[-1] if len(self.blocks) > 0 else None
+        # Utils.Print("blockLen: %s, previous: %s" % (len(self.blocks), str(previous)))
         current = BlockData(num, id, producer, time, received, lib, trxs, rcvOrProduced, previous)
         self.blocks.append(current)
-        if (self.blocks[0].num == lib):
+        # Utils.Print("Post-info ****")
+        # Utils.Print("blocks[0].num: %s, lib: %s" % (self.blocks[0].num, lib))
+        if self.blocks[0].num == lib:
             self.lib = lib
+        else:
+            assert self.lib is None,\
+                Utils.Print("ERROR: Last stored block was tracking lib, but it is not anymore.  " +
+                            "Previous lib identified as oldest in block list: %d.  " +
+                            "Now oldest block num: %d. Newest block num: %d and lib: %d" %
+                            (self.lib, self.blocks[0].num, current.num, current.lib))
+            Utils.Print("NOT setting lib")
         if printHeadForkAnalysis:
             self.forkAnalysisFile.write("   %s\n" % (str(current)))
             if printHeadForkAnalysis.accummulatedSlots > 0.0:
