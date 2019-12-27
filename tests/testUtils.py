@@ -672,8 +672,8 @@ class NodeosLogBlockReader:
                 self.forkAnalysisFile.write("\nOld Fork skipped %d slots and contained %d total transactions.\n" % (printHeadForkAnalysis.missedSlots(), printHeadForkAnalysis.trxs))
                 self.forkAnalysisFile.write("New Fork skipped %d slots and contained %d total transactions. It is %s than the old fork.\n" % (newForkMissingSlots, current.trxs, earlierLater))
                 trxsDiff = current.trxs - printHeadForkAnalysis.trxs
-                trxsPercent = int((trxsDiff / printHeadForkAnalysis.trxs) * 100)
                 lossGain = "loss" if trxsDiff < 0 else "gain"
-                self.forkAnalysisFile.write("%d transaction change. %d%% %s\n\n" % (trxsDiff, trxsPercent, lossGain))
+                trxsPercent = "%d%% %s" % (int((trxsDiff / printHeadForkAnalysis.trxs) * 100), lossGain) if printHeadForkAnalysis.trxs != 0 else ""
+                self.forkAnalysisFile.write("%d transaction change. %s\n\n" % (trxsDiff, trxsPercent))
 
         return current
