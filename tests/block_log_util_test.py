@@ -2,7 +2,6 @@
 
 from testUtils import Utils
 from testUtils import BlockLogAction
-import time
 from Cluster import Cluster
 from WalletMgr import WalletMgr
 from Node import BlockType
@@ -20,16 +19,22 @@ from TestHelper import TestHelper
 Print=Utils.Print
 errorExit=Utils.errorExit
 
-from core_symbol import CORE_SYMBOL
-
-def verifyBlockLog(expected_block_num, trimmedBlockLog):
-    firstBlockNum = expected_block_num
+def verifyBlockLog(firstBlockNum, trimmedBlockLog, expectedLastBlockNum=None):
+    expectedBlockNum = firstBlockNum
     for block in trimmedBlockLog:
-        assert 'block_num' in block, print("ERROR: eosio-blocklog didn't return block output")
-        block_num = block['block_num']
-        assert block_num == expected_block_num
-        expected_block_num += 1
-    Print("Block_log contiguous from block number %d to %d" % (firstBlockNum, expected_block_num - 1))
+        assert 'block_num' in block, Print("ERROR: eosio-blocklog didn't return block output. block content: %s" % (block))
+        blockNum = block['block_num']
+        assert blockNum == expectedBlockNum,\
+            Print("ERROR: Expected next block number in block log to be %d, instead it was %d.  First block number in block log was %d." %
+                  (expectedBlockNum, blockNum, firstBlockNum))
+        expectedBlockNum += 1
+    Print("Block_log contiguous from block number %d to %d" % (firstBlockNum, expectedBlockNum - 1))
+    if expectedLastBlockNum is not None:
+        last_block_num_diff = expectedLastBlockNum - expectedBlockNum + 1
+        direction = "after" if last_block_num_diff < 0 else "before"  # not needed for 0, so not worrying about that case
+        assert last_block_num_diff == 0,\
+            Print("ERROR: The last block number in the block log was %d which is %d %s the expected block number of %d" %
+                  (expectedBlockNum - 1, abs(last_block_num_diff), direction, expectedLastBlockNum))
 
 
 appArgs=AppArgs()
@@ -140,6 +145,10 @@ try:
     Print("Block num %d will definitely be at least one block behind the most recent entry in block log, so --trim will work" % (beforeEndOfBlockLog))
     output=cluster.getBlockLog(0, blockLogAction=BlockLogAction.trim, last=beforeEndOfBlockLog, throwException=True)
 
+    Print("Analyze block log.")
+    trimmedBackBlockLog=cluster.getBlockLog(0, blockLogAction=BlockLogAction.return_blocks)
+    verifyBlockLog(1, trimmedBackBlockLog, expectedLastBlockNum=beforeEndOfBlockLog)
+
     Print("Kill the non production node, we want to verify its block log")
     cluster.getNode(2).kill(signal.SIGTERM)
 
@@ -150,9 +159,9 @@ try:
     output=cluster.getBlockLog(2, blockLogAction=BlockLogAction.smoke_test)
 
     Print("Analyze block log.")
-    trimmedBlockLog=cluster.getBlockLog(2, blockLogAction=BlockLogAction.return_blocks)
+    trimmedFrontBlockLog=cluster.getBlockLog(2, blockLogAction=BlockLogAction.return_blocks)
 
-    verifyBlockLog(2, trimmedBlockLog)
+    verifyBlockLog(2, trimmedFrontBlockLog)
 
     # relaunch the node with the truncated block log and ensure it catches back up with the producers
     current_head_block_num = node1.getInfo()["head_block_num"]
