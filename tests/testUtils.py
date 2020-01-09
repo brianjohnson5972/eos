@@ -197,9 +197,10 @@ class Utils:
             timeout=60
 
         endTime=time.time()+timeout
+        remainingTime=timeout
         needsNewLine=False
         try:
-            while endTime > time.time():
+            while remainingTime > 0:
                 ret=lam()
                 if ret is not None:
                     return ret
@@ -212,7 +213,9 @@ class Utils:
                     needsNewLine=True
                 if reporter is not None:
                     reporter()
+                timeToSleep = min(remainingTime, sleepTime)
                 time.sleep(sleepTime)
+                remainingTime = endTime - time.time()
         finally:
             if needsNewLine:
                 Utils.Print()
