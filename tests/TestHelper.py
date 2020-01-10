@@ -3,6 +3,8 @@ from Cluster import Cluster
 from WalletMgr import WalletMgr
 from datetime import datetime
 import platform
+import re
+import thread
 
 import argparse
 
@@ -28,11 +30,77 @@ class AppArgs:
         arg=self.AppArg(flag, help, action=action)
         self.args.append(arg)
 
+class TimerProcess:
+    def __init__(self, outfilename, interval=0.1):
+        self.interval=interval
+        self.outfilename=outfilename
+        self.outfile=open(outfilename,'w')
+        self.procLock=thread.allocate_lock()
+        self.run=True
+        self.exited=False
+        self.analysis=None
+        self.expectedWindow=datetime.timedelta(milliseconds=100)
+        thread.start_new_thread(self.reportTime, ())
+
+    def shutdown(self):
+        with self.procLock:
+            if Utils.Debug: Utils.Print("shutting down timer process")
+            self.run=False
+            while not self.exited:
+                pass
+        if Utils.Debug: Utils.Print("shutdown timer process")
+
+    def __analyzeWindow(self, previous, current, report):
+        diffTime=current - previous if previous else self.expectedWindow
+        if diffTime < 2 * self.expectedWindow:
+            return False
+
+        if "missed" not in self.analysis:
+            self.analysis['missed']=[]
+
+        self.analysis["missed"].append((previous,current))
+
+        if report:
+            percent=int((diffTime - self.expectedWindow) / self.expectedWindow * 100)
+            Utils.Print("No timing info during %s window (from %s to %s, exceeded expected time by %d%%)" % (diffTime, previous, current, percent))
+
+        return True
+
+    def analyze(self, report=Utils.Debug, failOnError=False):
+        assert not self.exited, Utils.Print("ERROR: Cannot call TimerProcess.analyze() before shutdown has been called")
+        self.analysis={}
+        previous=None
+        failed=False
+        with open(self.outfilename, 'r') as analyzeFile:
+            timeReg=re.compile(r'\s+(\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\d\d\d)\s')
+            for line in analyzeFile.readLines():
+                match=timeReg.search(line)
+                if match:
+                    lineTime=datetime.strptime(match.group(1), Utils.TimeFmt)
+                    if self.__analyzeWindow(previous, lineTime, report):
+                        failed=True
+                    previous=lineTime
+
+    def reportTime(self):
+        try:
+            while True:
+                with self.procLock:
+                    if not self.run:
+                        self.exited=True
+                        self.outfile.write(datetime.utcnow().strftime(Utils.TimeFmt) + ' exiting\n')
+                        return
+                self.outfile.write(datetime.utcnow().strftime(Utils.TimeFmt) + '\n')
+                time.sleep(0.1)
+        finally:
+            self.outfile.close()
+            thread.exit()
+
 # pylint: disable=too-many-instance-attributes
 class TestHelper(object):
     LOCAL_HOST="localhost"
     DEFAULT_PORT=8888
     DEFAULT_WALLET_PORT=9899
+    TIMER_PROC=None
 
     @staticmethod
     # pylint: disable=too-many-branches
@@ -113,6 +181,8 @@ class TestHelper(object):
             parser.add_argument("--sanity-test", help="Validates nodeos and kleos are in path and can be started up.", action='store_true')
         if "--alternate-version-labels-file" in includeArgs:
             parser.add_argument("--alternate-version-labels-file", type=str, help="Provide a file to define the labels that can be used in the test and the path to the version installation associated with that.")
+        if "--suppress-timer-process" in includeArgs:
+            parser.add_argument("--suppress-timer-process", help="prevent the tests timer process from running during the test", action='store_true')
 
         for arg in applicationSpecificArgs.args:
             if arg.type is not None:
@@ -121,6 +191,9 @@ class TestHelper(object):
                 parser.add_argument(arg.flag, help=arg.help, action=arg.action)
 
         args = parser.parse_args()
+        if not hasattr(args, "suppress_timer_process") or not args.suppress_timer_process:
+            outfilename=os.path.join(Utils.DataDir, "100millisecTimeFile.txt")
+            TestHelper.TIMER_PROC=TimerProcess(outfilename)
         return args
 
     @staticmethod
@@ -154,6 +227,11 @@ class TestHelper(object):
             Utils.Print("Test succeeded.")
         else:
             Utils.Print("Test failed.")
+
+        if TestHelper.TIMER_PROC:
+            TestHelper.TIMER_PROC.shutdown()
+            TestHelper.TIMER_PROC.analyze()
+
         if not testSuccessful and dumpErrorDetails:
             cluster.reportStatus()
             Utils.Print(Utils.FileDivider)
