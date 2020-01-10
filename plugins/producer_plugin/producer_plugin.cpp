@@ -1795,13 +1795,14 @@ void producer_plugin_impl::schedule_production_loop() {
       // we succeeded but block may be exhausted
       static const boost::posix_time::ptime epoch(boost::gregorian::date(1970, 1, 1));
       auto deadline = calculate_block_deadline(chain.pending_block_time());
+      const auto now_time = fc::time_point::now();
 
-      if (deadline > fc::time_point::now()) {
+      if (deadline > now_time) {
          // ship this block off no later than its deadline
          EOS_ASSERT( chain.is_building_block(), missing_pending_block_state, "producing without pending_block_state, start_block succeeded" );
          _timer.expires_at( epoch + boost::posix_time::microseconds( deadline.time_since_epoch().count() ));
-         fc_dlog(_log, "Scheduling Block Production on Normal Block #${num} for ${time}",
-                       ("num", chain.head_block_num()+1)("time",deadline));
+         fc_dlog(_log, "Scheduling Block Production on Normal Block #${num} for ${time} (${count})",
+                       ("num", chain.head_block_num()+1)("time",deadline)("count", (deadline - now_time).count()));
       } else {
          EOS_ASSERT( chain.is_building_block(), missing_pending_block_state, "producing without pending_block_state" );
          auto expect_time = chain.pending_block_time() - fc::microseconds(config::block_interval_us);
@@ -1843,7 +1844,8 @@ void producer_plugin_impl::schedule_delayed_production_loop(const std::weak_ptr<
    for (const auto&p: _producers) {
       auto next_producer_block_time = calculate_next_block_time(p, current_block_time);
       if (next_producer_block_time) {
-         auto producer_wake_up_time = *next_producer_block_time;
+         // wake up with a full block interval to the deadline
+         auto producer_wake_up_time = *next_producer_block_time - fc::microseconds(config::block_interval_us);
          if (wake_up_time) {
             wake_up_time = std::min<fc::time_point>(*wake_up_time, producer_wake_up_time);
          } else {
