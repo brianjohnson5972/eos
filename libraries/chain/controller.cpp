@@ -2120,6 +2120,8 @@ struct controller_impl {
    deque<transaction_metadata_ptr> abort_block() {
       deque<transaction_metadata_ptr> applied_trxs;
       if( pending ) {
+         ilog("Aborting block #${n} @ ${t} signed by ${p}",
+              ("n",pending->get_pending_block_header_state().block_num)("t",pending->get_pending_block_header_state().timestamp)("p", pending->get_pending_block_header_state().producer));
          applied_trxs = pending->extract_trx_metas();
          pending.reset();
          protocol_features.popped_blocks_to( head->block_num );
