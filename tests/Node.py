@@ -263,7 +263,9 @@ class Node(object):
                 raise
 
     # pylint: disable=too-many-branches
-    def getBlock(self, blockNum, silentErrors=False, exitOnError=False):
+    def getBlock(self, blockNum, silentErrors=False, exitOnError=False, waitForBlock=False, timeout=None):
+        if waitForBlock:
+            self.waitForBlock(blockNum, timeout=timeout, blockType=BlockType.head)
         """Given a blockId will return block details."""
         assert(isinstance(blockNum, int))
         if not self.enableMongo:
@@ -690,7 +692,7 @@ class Node(object):
         ret=Utils.waitForBool(lam, timeout)
         return ret
 
-    def waitForBlock(self, blockNum, timeout=None, blockType=BlockType.head, reportInterval=None):
+    def waitForBlock(self, blockNum, timeout=None, sleepTime=3, blockType=BlockType.head, reportInterval=None):
         lam = lambda: self.getBlockNum(blockType=blockType) > blockNum
         blockDesc = "head" if blockType == BlockType.head else "LIB"
         count = 0
@@ -708,7 +710,7 @@ class Node(object):
                     Utils.Print("Waiting on %s block num %d, get info = {\n%s\n}" % (blockDesc, blockNum, info))
 
         reporter = WaitReporter(self, reportInterval) if reportInterval is not None else None
-        ret=Utils.waitForBool(lam, timeout, reporter=reporter)
+        ret=Utils.waitForBool(lam, timeout=timeout, sleepTime=sleepTime, reporter=reporter)
         return ret
 
     def waitForIrreversibleBlock(self, blockNum, timeout=None, blockType=BlockType.head):
@@ -1387,16 +1389,19 @@ class Node(object):
         return True
 
     def getBlockProducerByNum(self, blockNum, timeout=None, waitForBlock=True, exitOnError=True):
-        if waitForBlock:
-            self.waitForBlock(blockNum, timeout=timeout, blockType=BlockType.head)
-        block=self.getBlock(blockNum, exitOnError=exitOnError)
+        block=self.getBlock(blockNum, exitOnError=exitOnError, waitForBlock=waitForBlock, timeout=timeout)
+        if block is None:
+            if exitOnError:
+                Utils.cmdError("could not retrieve block immediately for block number %s" % (blockNum))
+                Utils.errorExit("Failed to get block")
+            return None
         blockProducer=block["producer"]
         if blockProducer is None and exitOnError:
             Utils.cmdError("could not get producer for block number %s" % (blockNum))
             Utils.errorExit("Failed to get block's producer")
         return blockProducer
 
-    def getBlockProducer(self, timeout=None, waitForBlock=True, exitOnError=True, blockType=BlockType.head):
+    def getBlockProducer(self, exitOnError=True, blockType=BlockType.head):
         blockNum=self.getBlockNum(blockType=blockType)
         block=self.getBlock(blockNum, exitOnError=exitOnError, blockType=blockType)
         blockProducer=block["producer"]

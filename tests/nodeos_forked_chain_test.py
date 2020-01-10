@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 
 from testUtils import Utils
-import testUtils
+from datetime import datetime
+from datetime import timedelta
 import time
 from Cluster import Cluster
 from WalletMgr import WalletMgr
-from Node import BlockType
-from Node import Node
 from TestHelper import TestHelper
 
-import decimal
-import math
-import re
+import json
 import signal
 
 ###############################################################
@@ -82,7 +79,6 @@ def analyzeBPs(bps0, bps1, expectDivergence):
             return None
 
         bpsStr0=None
-        bpsStr2=None
         start=length
         for i in range(index,length):
             if bpsStr0 is None:
@@ -153,6 +149,14 @@ killWallet=not dontKill
 
 WalletdName=Utils.EosWalletName
 ClientName="cleos"
+
+def get(dict, key):
+    assert key in dict, Print("ERROR: could not find key: %s in %s" % (key, json.dumps(dict, indent=4, sort_keys=True)))
+    return dict[key]
+
+filterInfoParams = ['head_block_time', 'head_block_num', 'head_block_producer', 'last_irreversible_block_num', 'fork_db_head_block_num', 'head_block_id', 'last_irreversible_block_id', 'fork_db_head_block_id']
+def infoDesc(block):
+    return { k:v for (k,v) in block.items() if k in filterInfoParams}
 
 try:
     TestHelper.printSystemInfo("BEGIN")
@@ -260,8 +264,8 @@ try:
     cluster.biosNode.kill(signal.SIGTERM)
 
     #advance to the next block of 12
-    lastBlockProducer=blockProducer
-    while blockProducer==lastBlockProducer:
+    currentBlockProducer=blockProducer
+    while blockProducer==currentBlockProducer:
         blockNum+=1
         blockProducer=node.getBlockProducerByNum(blockNum)
 
@@ -270,27 +274,36 @@ try:
 
     productionCycle=[]
     producerToSlot={}
-    slot=-1
+    prodWindow=-1
     inRowCountPerProducer=12
+    previousTimestamp=None
     while True:
         if blockProducer not in producers:
             Utils.errorExit("Producer %s was not one of the voted on producers" % blockProducer)
 
         productionCycle.append(blockProducer)
-        slot+=1
+        prodWindow+=1
         if blockProducer in producerToSlot:
-            Utils.errorExit("Producer %s was first seen in slot %d, but is repeated in slot %d" % (blockProducer, producerToSlot[blockProducer], slot))
+            Utils.errorExit("Producer %s was first seen in production window %d, but is repeated in production window %d" % (blockProducer, producerToSlot[blockProducer], prodWindow))
 
-        producerToSlot[blockProducer]={"slot":slot, "count":0}
-        lastBlockProducer=blockProducer
-        while blockProducer==lastBlockProducer:
+        producerToSlot[blockProducer]={"prodWindow":prodWindow, "count":0}
+        currentBlockProducer=blockProducer
+        while blockProducer==currentBlockProducer:
             producerToSlot[blockProducer]["count"]+=1
             blockNum+=1
-            blockProducer=node.getBlockProducerByNum(blockNum)
+            block=node.getBlock(blockNum, exitOnError=True, waitForBlock=True, timeout=None)
+            blockProducer=get(block,"producer")
+            timestampStr=get(block,"timestamp")
+            timestamp=datetime.strptime(timestampStr, Utils.TimeFmt)
+            timeDelta=timestamp - previousTimestamp if previousTimestamp is not None else timedelta(milliseconds=500)
+            slotChange=int(2 * timeDelta.total_seconds())
+            assert slotChange == 1, Print("ERROR: Block number %d skipped from time %s to %s (missed %d slots)" %
+                                          (blockNum, previousTimestamp.strftime(Utils.TimeFmt), timestamp.strftime(Utils.TimeFmt), slotChange - 1))
+            previousTimestamp=timestamp
 
-        if producerToSlot[lastBlockProducer]["count"]!=inRowCountPerProducer:
-            Utils.errorExit("Producer %s, in slot %d, expected to produce %d blocks but produced %d blocks.  At block number %d." %
-                            (blockProducer, slot, inRowCountPerProducer, producerToSlot[lastBlockProducer]["count"], blockNum))
+        if producerToSlot[currentBlockProducer]["count"]!=inRowCountPerProducer:
+            Utils.errorExit("Producer %s, in production window %d, expected to produce %d blocks but produced %d blocks.  At block number %d." %
+                            (blockProducer, prodWindow, inRowCountPerProducer, producerToSlot[currentBlockProducer]["count"], blockNum))
 
         if blockProducer==productionCycle[0]:
             break
@@ -319,41 +332,52 @@ try:
     # kill at last block before defproducerl, since the block it is killed on will get propagated
     killAtProducer="defproducerk"
     nonProdNode.killNodeOnProducer(producer=killAtProducer, whereInSequence=(inRowCountPerProducer-1))
+    killTime = datetime.utcnow()
 
+    node0BlocksPerWindow=int((maxActiveProducers + 1)/2)*inRowCountPerProducer
+    node1BlocksPerWindow=int((maxActiveProducers - 1)/2)*inRowCountPerProducer
+    node1BlocksPerWindowSeconds=node1BlocksPerWindow/2
 
     # ***   Identify a highest block number to check while we are trying to identify where the divergence will occur   ***
+
+    def blocktime(block):
+        timestampStr=block["timestamp"]
+        return datetime.strptime(timestampStr, Utils.TimeFmt)
+
 
     # will search full cycle after the current block, since we don't know how many blocks were produced since retrieving
     # block number and issuing kill command
     postKillBlockNum=prodNodes[1].getBlockNum()
-    blockProducers0=[]
-    blockProducers1=[]
-    libs0=[]
-    libs1=[]
     lastBlockNum=max([preKillBlockNum,postKillBlockNum])+2*maxActiveProducers*inRowCountPerProducer
     actualLastBlockNum=None
     prodChanged=False
     nextProdChange=False
     #identify the earliest LIB to start identify the earliest block to check if divergent branches eventually reach concensus
     (headBlockNum, libNumAroundDivergence)=getMinHeadAndLib(prodNodes)
-    Print("Tracking block producers from %d till divergence or %d. Head block is %d and lowest LIB is %d" % (preKillBlockNum, lastBlockNum, headBlockNum, libNumAroundDivergence))
+    Print("Analyzing block producers from %d till divergence or %d. Head block is %d and lowest LIB is %d" % (preKillBlockNum, lastBlockNum, headBlockNum, libNumAroundDivergence))
     transitionCount=0
     missedTransitionBlock=None
+    divergentBlockNode1=None
+    divergentTime=None
+
+    def sinceDivergence():
+        assert divergentTime is not None
+        return (datetime.utcnow() - divergentTime).total_seconds()
+
     for blockNum in range(preKillBlockNum,lastBlockNum):
         #avoiding getting LIB until my current block passes the head from the last time I checked
-        if blockNum>headBlockNum:
-            (headBlockNum, libNumAroundDivergence)=getMinHeadAndLib(prodNodes)
 
         # track the block number and producer from each producing node
-        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum)
-        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum)
-        blockProducers0.append({"blockNum":blockNum, "prod":blockProducer0})
-        blockProducers1.append({"blockNum":blockNum, "prod":blockProducer1})
+        blockNode0=prodNodes[0].getBlock(blockNum, waitForBlock=False)
+        blockProducer0=get(blockNode0,"producer") if blockNode0 else None
+        blockNode1=prodNodes[1].getBlock(blockNum, waitForBlock=True, timeout=1)
+        assert blockNode1 is not None, Utils.Print("ERROR: block number %d should be available for node 01." % (blockNum))
+        blockProducer1=get(blockNode1,"producer") if blockNode1 else None
 
         #in the case that the preKillBlockNum was also produced by killAtProducer, ensure that we have
         #at least one producer transition before checking for killAtProducer
         if not prodChanged:
-            if preKillBlockProducer!=blockProducer0:
+            if blockProducer0 is not None and preKillBlockProducer!=blockProducer0:
                 prodChanged=True
 
         #since it is killing for the last block of killAtProducer, we look for the next producer change
@@ -361,11 +385,25 @@ try:
             nextProdChange=True
         elif nextProdChange and blockProducer1!=killAtProducer:
             nextProdChange=False
-            if blockProducer0!=blockProducer1:
-                Print("Divergence identified at block %s, node_00 producer: %s, node_01 producer: %s" % (blockNum, blockProducer0, blockProducer1))
+            if blockProducer0 is None:
+                info0=prodNodes[0].getInfo()
+                info1=prodNodes[1].getInfo()
                 actualLastBlockNum=blockNum
+                divergentBlockNode1=blockNode1
+                divergentTime=blocktime(blockNode1)
+                Print("Divergence identified at block %s, node_00 producer: %s, node_01 producer: %s, "
+                      "delay from kill sent to divergent block: %.3f sec, time since divergence: %.1f sec, "
+                      "node_00 info: %s, node_01 info: %s" %
+                      (blockNum, blockProducer0, blockProducer1, (divergentTime - killTime).total_seconds(),
+                      sinceDivergence(), info0, info1))
                 break
             else:
+                assert blockProducer0 == blockProducer1,\
+                    Utils.Print("ERROR: Block producers for block num %d is %s for node_00 and is %s for node_01.  " +
+                                "Either the timing for this test needs to be fixed (if timestamp from kill message " +
+                                "till now exceeds %d seconds) or there is another issue.  " +
+                                "From node 00: %s, from node 00: %s" %
+                                (blockNum, blockProducer0, blockProducer1, node1BlocksPerWindowSeconds, blockNode0, blockNode1))
                 missedTransitionBlock=blockNum
                 transitionCount+=1
                 # allow this to transition twice, in case the script was identifying an earlier transition than the bridge node received the kill command
@@ -384,32 +422,80 @@ try:
     if nonProdNode.verifyAlive():
         Utils.errorExit("Expected the non-producing node to have shutdown.")
 
-    Print("Analyzing the producers leading up to the block after killing the non-producing node, expecting divergence at %d" % (blockNum))
-
-    firstDivergence=analyzeBPs(blockProducers0, blockProducers1, expectDivergence=True)
-    # Nodes should not have diverged till the last block
-    if firstDivergence!=blockNum:
-        Utils.errorExit("Expected to diverge at %s, but diverged at %s." % (firstDivergence, blockNum))
-    blockProducers0=[]
-    blockProducers1=[]
+    libNumAroundDivergence=get(prodNodes[0].getInfo(),"last_irreversible_block_num")
 
     for prodNode in prodNodes:
         info=prodNode.getInfo()
-        Print("node info: %s" % (info))
+        Print("After analyzing for divergence, node info: %s" % (info))
 
-    killBlockNum=blockNum
-    lastBlockNum=killBlockNum+(maxActiveProducers - 1)*inRowCountPerProducer+1  # allow 1st testnet group to produce just 1 more block than the 2nd
+    killBlockNum=actualLastBlockNum
+    lastBlockNum=killBlockNum+node1BlocksPerWindow  # go till the 1st testnet is exactly the same size as the 2nd
 
-    Print("Tracking the blocks from the divergence till there are 10*12 blocks on one chain and 10*12+1 on the other, from block %d to %d" % (killBlockNum, lastBlockNum))
+    info0=prodNodes[0].getInfo()
+    info1=prodNodes[1].getInfo()
+    Print("Tracking the blocks from the divergence till there are 10*12 blocks on one chain and 10*12+1 on the other, from block %d to %d. Time since divergence: %.1f. node_00 info: %s, node_01 info: %s" % (killBlockNum, lastBlockNum, sinceDivergence(), info0, info1))
 
+    blockProducers0=[]
+    blockProducers1=[]
+
+    blockNode0=prodNodes[0].getBlock(killBlockNum - 1, exitOnError=True, silentErrors=True, waitForBlock=True, timeout=None)
+    blockNode1=prodNodes[1].getBlock(killBlockNum - 1, exitOnError=True, silentErrors=True, waitForBlock=True, timeout=None)
+    Print("blockNum: %d, prod0: %s, t0: %s, prod1: %s, t1: %s, <--start" % (killBlockNum - 1, blockNode0["producer"], blockNode0["timestamp"], blockNode1["producer"], blockNode1["timestamp"]))
+
+    previousNode0Timestamp=blocktime(blockNode0)
+    previousNode1Timestamp=blocktime(blockNode1)
+
+    previousBlockNode0=None
+    previousBlockNode1=None
+
+    timeout0 = int((datetime.utcnow() - killTime).total_seconds() + 0.5)
     for blockNum in range(killBlockNum,lastBlockNum):
-        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum)
-        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum)
+        blockNode0=prodNodes[0].getBlock(blockNum, exitOnError=True, silentErrors=True, waitForBlock=True, timeout=timeout0)
+        # only the first block will not be ready, the rest should always be available in less than 1 second
+        timeout0=1
+        blockProducer0=blockNode0["producer"]
+
+        blockNode1=prodNodes[1].getBlock(blockNum, exitOnError=True, silentErrors=True, waitForBlock=True, timeout=timeout0)
+        blockProducer1=blockNode1["producer"]
         blockProducers0.append({"blockNum":blockNum, "prod":blockProducer0})
         blockProducers1.append({"blockNum":blockNum, "prod":blockProducer1})
 
+        Print("blockNum: %d, prod0: %s, t0: %s, t1: %s, prod1: %s, t0: %s, t1: %s" % (blockNum, blockProducer0, previousNode0Timestamp.strftime(Utils.TimeFmt), blockNode0["timestamp"], blockProducer1, previousNode1Timestamp.strftime(Utils.TimeFmt), blockNode1["timestamp"]))
+        node0Timestamp=blocktime(blockNode0)
+        timeDeltaNode0=node0Timestamp - previousNode0Timestamp
+        slotChange=int(2 * timeDeltaNode0.total_seconds())
 
-    Print("Analyzing the producers from the divergence to the lastBlockNum and verify they stay diverged, expecting divergence at block %d" % (killBlockNum))
+        if blockNum == killBlockNum:
+            assert slotChange == node1BlocksPerWindow + 1, Print("ERROR: Skipped %d slots for block number %d, should have skipped %d because of divergence in the branches. t0: %s, t1: %s - Node0 prev block: %s, this block: %s, Node 1 prev block: %s, this block: %s" % (slotChange - 1, blockNum, node1BlocksPerWindow, previousNode0Timestamp.strftime(Utils.TimeFmt), node0Timestamp.strftime(Utils.TimeFmt), previousBlockNode0, blockNode0, previousBlockNode1, blockNode1))
+        else:
+            assert slotChange == 1, Print("ERROR: Skipped %d slots for block number %d, should not skip other than where the branches diverge. t0: %s, t1: %s - Node0 prev block: %s, this block: %s, Node 1 prev block: %s, this block: %s" % (slotChange - 1, blockNum, previousNode0Timestamp.strftime(Utils.TimeFmt), node0Timestamp.strftime(Utils.TimeFmt), previousBlockNode0, blockNode0, previousBlockNode1, blockNode1))
+
+        previousNode0Timestamp=node0Timestamp
+
+        node1Timestamp=blocktime(blockNode1)
+        timeDeltaNode1=node1Timestamp - previousNode1Timestamp
+        slotChange=int(2 * timeDeltaNode1.total_seconds())
+        assert slotChange == 1, Print("ERROR: Skipped %d slots for block number %d, should not skip prior to divergence in the branches. t0: %s, t1: %s - Node0 prev block: %s, this block: %s, Node 1 prev block: %s, this block: %s" % (slotChange - 1, blockNum, previousNode0Timestamp.strftime(Utils.TimeFmt), node1Timestamp.strftime(Utils.TimeFmt), previousBlockNode0, blockNode0, previousBlockNode1, blockNode1))
+        previousNode1Timestamp=node1Timestamp
+
+        previousBlockNode0=blockNode0
+        previousBlockNode1=blockNode1
+
+    blockNode0=prodNodes[0].getBlock(lastBlockNum + 1, exitOnError=True, silentErrors=True, waitForBlock=True, timeout=1)
+    assert blockNode0 is not None,\
+        Print("ERROR: Failed to retrieve block number %d from Node_00 after waiting 1 second, even though it has the "
+              "next producer: %s. node_00 info: %s, node_01 info: %s" % (blockProducers0[-1]["prod"], prodNodes[0].getInfo(), prodNodes[1].getInfo()))
+
+    info0=prodNodes[0].getInfo()
+    info1=prodNodes[1].getInfo()
+    Print("Relaunching the non-producing bridge node to connect the producing nodes again. Time since divergence: %.1f. node_00 info: %s, node_01 info: %s" % (sinceDivergence(), info0, info1))
+
+    if not nonProdNode.relaunch(nonProdNode.nodeNum, None):
+        Utils.errorExit("Failure - (non-production) node %d should have restarted" % (nonProdNode.nodeNum))
+
+    info0=prodNodes[0].getInfo()
+    info1=prodNodes[1].getInfo()
+    Print("Analyzing the cached producers from the divergence to the lastBlockNum and verify they stay diverged, expecting divergence at block %d, while allowing network to resync. Time since divergence: %.1f. node_00 info: %s, node_01 info: %s" % (killBlockNum, sinceDivergence(), info0, info1))
 
     firstDivergence=analyzeBPs(blockProducers0, blockProducers1, expectDivergence=True)
     if firstDivergence!=killBlockNum:
@@ -419,21 +505,15 @@ try:
 
     for prodNode in prodNodes:
         info=prodNode.getInfo()
-        Print("node info: %s" % (info))
+        Print("Before relaunch, node info: %s" % (info))
 
-    Print("Relaunching the non-producing bridge node to connect the producing nodes again")
-
-    if not nonProdNode.relaunch(nonProdNode.nodeNum, None):
-        errorExit("Failure - (non-production) node %d should have restarted" % (nonProdNode.nodeNum))
-
-
-    Print("Waiting to allow forks to resolve")
+    Print("Waiting to allow forks to resolve. Time since divergence: %.1f." % (sinceDivergence()))
 
     for prodNode in prodNodes:
         info=prodNode.getInfo()
-        Print("node info: %s" % (info))
+        Print("Waiting to resolve fork, node info: %s" % (info))
 
-    #ensure that the nodes have enough time to get in concensus, so wait for 3 producers to produce their complete round
+    # ensure that the nodes have enough time to get in concensus, so wait for 3 producers to produce their complete round
     time.sleep(inRowCountPerProducer * 3 / 2)
     remainingChecks=20
     match=False
@@ -449,27 +529,49 @@ try:
             else:
                 checkHead=True
                 continue
-        Print("Fork has not resolved yet, wait a little more. Block %s has producer %s for node_00 and %s for node_01.  Original divergence was at block %s. Wait time remaining: %d" % (checkMatchBlock, blockProducer0, blockProducer1, killBlockNum, remainingChecks))
+        Print("Fork has not resolved yet, wait a little more. Time since divergence: %.1f. Block %s has producer %s for node_00 and %s for node_01.  Original divergence was at block %s. Wait time remaining: %d" % (sinceDivergence(), checkMatchBlock, blockProducer0, blockProducer1, killBlockNum, remainingChecks))
         time.sleep(1)
         remainingChecks-=1
 
     for prodNode in prodNodes:
         info=prodNode.getInfo()
-        Print("node info: %s" % (info))
+        Print("Fork resolved, node info: %s" % (info))
 
     # ensure all blocks from the lib before divergence till the current head are now in consensus
     endBlockNum=max(prodNodes[0].getBlockNum(), prodNodes[1].getBlockNum())
 
-    Print("Identifying the producers from the saved LIB to the current highest head, from block %d to %d" % (libNumAroundDivergence, endBlockNum))
+    Print("Identifying the producers from the saved LIB to the current highest head, from block %d to %d. Time since divergence: %.1f." % (libNumAroundDivergence, endBlockNum, sinceDivergence()))
 
+    blockNode0=prodNodes[0].getBlock(libNumAroundDivergence - 1, exitOnError=True, silentErrors=True, waitForBlock=True, timeout=None)
+    timestampStr=get(blockNode0, "timestamp")
+    previousTimestamp=datetime.strptime(timestampStr, Utils.TimeFmt)
+    Print("blockNum: %d, t0: %s" % (get(blockNode0, "block_num"), previousTimestamp.strftime(Utils.TimeFmt)))
+    timestamps=[]
     for blockNum in range(libNumAroundDivergence,endBlockNum):
-        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum)
-        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum)
+        blockNode0=prodNodes[0].getBlock(blockNum, exitOnError=True, silentErrors=True)
+        blockProducer0=blockNode0["producer"]
+        blockNode1=prodNodes[1].getBlock(blockNum, exitOnError=True, silentErrors=True)
+        blockProducer1=blockNode1["producer"]
         blockProducers0.append({"blockNum":blockNum, "prod":blockProducer0})
         blockProducers1.append({"blockNum":blockNum, "prod":blockProducer1})
 
+        # report slot errors after we have determined if there are any divergences
+        timestampStr=blockNode0["timestamp"]
+        timestamp=datetime.strptime(timestampStr, Utils.TimeFmt)
+        timeDelta=timestamp - previousTimestamp
+        slotChange=int(2 * timeDelta.total_seconds())
+        Print("block0 - blockNum: %d, slotChange: %d, t0: %s, t1: %s, producer: %s" % (blockNode0["block_num"], slotChange, previousTimestamp.strftime(Utils.TimeFmt), timestamp.strftime(Utils.TimeFmt), blockProducer0))
+        timestamps.append({"blockNum":blockNode0["block_num"], "slotChange":slotChange, "producer":blockProducer0, "t0":previousTimestamp.strftime(Utils.TimeFmt), "t1":timestamp.strftime(Utils.TimeFmt)})
 
-    Print("Analyzing the producers from the saved LIB to the current highest head and verify they match now")
+        timestampStr=blockNode1["timestamp"]
+        timestamp=datetime.strptime(timestampStr, Utils.TimeFmt)
+        timeDelta=timestamp - previousTimestamp
+        slotChange=int(2 * timeDelta.total_seconds())
+        Print("block1 - blockNum: %d, slotChange: %d, t0: %s, t1: %s, producer: %s" % (blockNode1["block_num"], slotChange, previousTimestamp.strftime(Utils.TimeFmt), timestamp.strftime(Utils.TimeFmt), blockProducer1))
+        previousTimestamp=timestamp
+
+
+    Print("Analyzing the producers from the saved LIB to the current highest head and verify they match now. Time since divergence: %.1f." % (sinceDivergence()))
 
     analyzeBPs(blockProducers0, blockProducers1, expectDivergence=False)
 
@@ -479,7 +581,22 @@ try:
             resolvedKillBlockProducer = prod["prod"]
     if resolvedKillBlockProducer is None:
         Utils.errorExit("Did not find find block %s (the original divergent block) in blockProducers0, test setup is wrong.  blockProducers0: %s" % (killBlockNum, ", ".join(blockProducers)))
-    Print("Fork resolved and determined producer %s for block %s" % (resolvedKillBlockProducer, killBlockNum))
+    Print("Fork resolved and determined producer %s for block %s. Time since divergence: %.1f." % (resolvedKillBlockProducer, killBlockNum, sinceDivergence()))
+
+    node0WindowSkipFound=False
+    for timestamp in timestamps:
+        slotChange=timestamp["slotChange"]
+        # allow for one skip in slots, which has to occur after all the successive blocks from node1, and before node1 would start producing again
+        if not node0WindowSkipFound and slotChange > node1BlocksPerWindow and slotChange <= node0BlocksPerWindow:
+            node0WindowSkipFound=True
+            continue
+
+#        assert slotChange == 1, Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s" % (timestamp["blockNum"], timestamp["slotChange"] - 1, timestamp["t0"], timestamp["t1"]))
+        assert slotChange <= 2, Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s. node0WindowSkipFound: %s, node1BlocksPerWindow: %s, node0BlocksPerWindow: %s" %
+                                      (timestamp["blockNum"], slotChange - 1, timestamp["t0"], timestamp["t1"], node0WindowSkipFound, node1BlocksPerWindow, node0BlocksPerWindow))
+        if slotChange == 2:
+            Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s. node0WindowSkipFound: %s" %
+                    (timestamp["blockNum"], slotChange - 1, timestamp["t0"], timestamp["t1"], node0WindowSkipFound))
 
     blockProducers0=[]
     blockProducers1=[]
