@@ -8,13 +8,14 @@ namespace eosio {
 
 static appbase::abstract_plugin& _test_control_plugin = app().register_plugin<test_control_plugin>();
 
-class test_control_plugin_impl {
+class test_control_plugin_impl : public std::enable_shared_from_this<test_control_plugin_impl> {
 public:
-   test_control_plugin_impl(chain::controller& c) : _chain(c) {}
+   test_control_plugin_impl(chain::controller& c, boost::asio::io_service& io) : _chain(c), _timer(io) {}
    void connect();
    void disconnect();
    void kill_on_lib(account_name prod, uint32_t where_in_seq);
    void kill_on_head(account_name prod, uint32_t where_in_seq);
+   void quit();
 
 private:
    void accepted_block(const chain::block_state_ptr& bsp);
@@ -30,6 +31,7 @@ private:
    bool                _clean_producer_sequence;
    std::atomic_bool    _track_lib;
    std::atomic_bool    _track_head;
+   boost::asio::deadline_timer _timer;
 };
 
 void test_control_plugin_impl::connect() {
@@ -46,6 +48,7 @@ void test_control_plugin_impl::connect() {
 void test_control_plugin_impl::disconnect() {
    _accepted_block_connection.reset();
    _irreversible_block_connection.reset();
+   _timer.cancel();
 }
 
 void test_control_plugin_impl::applied_irreversible_block(const chain::block_state_ptr& bsp) {
@@ -56,6 +59,11 @@ void test_control_plugin_impl::applied_irreversible_block(const chain::block_sta
 void test_control_plugin_impl::accepted_block(const chain::block_state_ptr& bsp) {
    if (_track_head)
       process_next_block_state(bsp);
+}
+
+void test_control_plugin_impl::quit() {
+   ilog("shutting down");
+   app().quit();
 }
 
 void test_control_plugin_impl::process_next_block_state(const chain::block_state_ptr& bsp) {
@@ -71,8 +79,17 @@ void test_control_plugin_impl::process_next_block_state(const chain::block_state
       _producer_sequence += 1;
 
       if (_producer_sequence >= _where_in_sequence) {
-         ilog("shutting down");
-         app().quit();
+         ilog("initiate timer to shutdown process");
+         _timer.cancel();
+         std::weak_ptr<test_control_plugin_impl> weak_this = shared_from_this();
+         _timer.expires_from_now( boost::posix_time::microseconds( chain::config::block_interval_us / 10 ));
+         _timer.async_wait( app().get_priority_queue().wrap( priority::medium,
+             [weak_this]( const boost::system::error_code& ec ) {
+                auto self = weak_this.lock();
+                if( self && ec != boost::asio::error::operation_aborted ) {
+                   self->quit();
+                }
+             } ) );
       }
    } else if (producer_name != _producer) {
       if (_producer_sequence != -1)
@@ -113,12 +130,16 @@ void test_control_plugin::plugin_initialize(const variables_map& options) {
 
 void test_control_plugin::plugin_startup() {
    ilog("test_control_plugin starting up");
-   my.reset(new test_control_plugin_impl(app().get_plugin<chain_plugin>().chain()));
+   my.reset(new test_control_plugin_impl(app().get_plugin<chain_plugin>().chain(), app().get_io_service()));
    my->connect();
 }
 
 void test_control_plugin::plugin_shutdown() {
-   my->disconnect();
+   try {
+      my->disconnect();
+   } catch(fc::exception& e) {
+      edump((e.to_detail_string()));
+   }
    ilog("test_control_plugin shutting down");
 }
 
