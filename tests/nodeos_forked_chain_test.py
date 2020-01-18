@@ -150,6 +150,8 @@ killWallet=not dontKill
 WalletdName=Utils.EosWalletName
 ClientName="cleos"
 
+potentialMissedBlockErrors=[]
+
 def get(dict, key):
     assert key in dict, Print("ERROR: could not find key: %s in %s" % (key, json.dumps(dict, indent=4, sort_keys=True)))
     return dict[key]
@@ -297,7 +299,8 @@ try:
             timestamp=datetime.strptime(timestampStr, Utils.TimeFmt)
             timeDelta=timestamp - previousTimestamp if previousTimestamp is not None else timedelta(milliseconds=500)
             slotChange=int(2 * timeDelta.total_seconds())
-            assert slotChange == 1, Print("ERROR: Block number %d skipped from time %s to %s (missed %d slots)" %
+            # allowing an occasional missed slot, will verify later
+            assert slotChange <= 2, Print("ERROR: Block number %d skipped from time %s to %s (missed %d slots)" %
                                           (blockNum, previousTimestamp.strftime(Utils.TimeFmt), timestamp.strftime(Utils.TimeFmt), slotChange - 1))
             previousTimestamp=timestamp
 
@@ -368,7 +371,7 @@ try:
         #avoiding getting LIB until my current block passes the head from the last time I checked
 
         # track the block number and producer from each producing node
-        blockNode0=prodNodes[0].getBlock(blockNum, waitForBlock=False)
+        blockNode0=prodNodes[0].getBlock(blockNum, waitForBlock=True, timeout=1)
         blockProducer0=get(blockNode0,"producer") if blockNode0 else None
         blockNode1=prodNodes[1].getBlock(blockNum, waitForBlock=True, timeout=1)
         assert blockNode1 is not None, Utils.Print("ERROR: block number %d should be available for node 01." % (blockNum))
@@ -433,7 +436,7 @@ try:
 
     info0=prodNodes[0].getInfo()
     info1=prodNodes[1].getInfo()
-    Print("Tracking the blocks from the divergence till there are 10*12 blocks on one chain and 10*12+1 on the other, from block %d to %d. Time since divergence: %.1f. node_00 info: %s, node_01 info: %s" % (killBlockNum, lastBlockNum, sinceDivergence(), info0, info1))
+    Print("Tracking the blocks from the divergence till there are 10*12 blocks on one chain and 10*12+1 on the other, from block %d to %d. Time since divergence: %.1f sec. node_00 info: %s, node_01 info: %s" % (killBlockNum, lastBlockNum, sinceDivergence(), info0, info1))
 
     blockProducers0=[]
     blockProducers1=[]
@@ -488,14 +491,14 @@ try:
 
     info0=prodNodes[0].getInfo()
     info1=prodNodes[1].getInfo()
-    Print("Relaunching the non-producing bridge node to connect the producing nodes again. Time since divergence: %.1f. node_00 info: %s, node_01 info: %s" % (sinceDivergence(), info0, info1))
+    Print("Relaunching the non-producing bridge node to connect the producing nodes again. Time since divergence: %.1f sec. node_00 info: %s, node_01 info: %s" % (sinceDivergence(), info0, info1))
 
     if not nonProdNode.relaunch(nonProdNode.nodeNum, None):
         Utils.errorExit("Failure - (non-production) node %d should have restarted" % (nonProdNode.nodeNum))
 
     info0=prodNodes[0].getInfo()
     info1=prodNodes[1].getInfo()
-    Print("Analyzing the cached producers from the divergence to the lastBlockNum and verify they stay diverged, expecting divergence at block %d, while allowing network to resync. Time since divergence: %.1f. node_00 info: %s, node_01 info: %s" % (killBlockNum, sinceDivergence(), info0, info1))
+    Print("Analyzing the cached producers from the divergence to the lastBlockNum and verify they stay diverged, expecting divergence at block %d, while allowing network to resync. Time since divergence: %.1f sec. node_00 info: %s, node_01 info: %s" % (killBlockNum, sinceDivergence(), info0, info1))
 
     firstDivergence=analyzeBPs(blockProducers0, blockProducers1, expectDivergence=True)
     if firstDivergence!=killBlockNum:
@@ -507,7 +510,7 @@ try:
         info=prodNode.getInfo()
         Print("Before relaunch, node info: %s" % (info))
 
-    Print("Waiting to allow forks to resolve. Time since divergence: %.1f." % (sinceDivergence()))
+    Print("Waiting to allow forks to resolve. Time since divergence: %.1f sec." % (sinceDivergence()))
 
     for prodNode in prodNodes:
         info=prodNode.getInfo()
@@ -529,7 +532,7 @@ try:
             else:
                 checkHead=True
                 continue
-        Print("Fork has not resolved yet, wait a little more. Time since divergence: %.1f. Block %s has producer %s for node_00 and %s for node_01.  Original divergence was at block %s. Wait time remaining: %d" % (sinceDivergence(), checkMatchBlock, blockProducer0, blockProducer1, killBlockNum, remainingChecks))
+        Print("Fork has not resolved yet, wait a little more. Time since divergence: %.1f sec. Block %s has producer %s for node_00 and %s for node_01.  Original divergence was at block %s. Wait time remaining: %d" % (sinceDivergence(), checkMatchBlock, blockProducer0, blockProducer1, killBlockNum, remainingChecks))
         time.sleep(1)
         remainingChecks-=1
 
@@ -583,27 +586,29 @@ try:
         Utils.errorExit("Did not find find block %s (the original divergent block) in blockProducers0, test setup is wrong.  blockProducers0: %s" % (killBlockNum, ", ".join(blockProducers)))
     Print("Fork resolved and determined producer %s for block %s. Time since divergence: %.1f." % (resolvedKillBlockProducer, killBlockNum, sinceDivergence()))
 
-    node0WindowSkipFound=False
+    node0WindowSkip=None
     for timestamp in timestamps:
         slotChange=timestamp["slotChange"]
         # allow for one skip in slots, which has to occur after all the successive blocks from node1, and before node1 would start producing again
-        if not node0WindowSkipFound and slotChange > node1BlocksPerWindow and slotChange <= node0BlocksPerWindow:
-            node0WindowSkipFound=True
+        if node0WindowSkip is None and slotChange > node1BlocksPerWindow and slotChange <= node0BlocksPerWindow + 1:
+            node0WindowSkip=timestamp["blockNum"]
             continue
 
-#        assert slotChange == 1, Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s" % (timestamp["blockNum"], timestamp["slotChange"] - 1, timestamp["t0"], timestamp["t1"]))
-        assert slotChange <= 2, Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s. node0WindowSkipFound: %s, node1BlocksPerWindow: %s, node0BlocksPerWindow: %s" %
-                                      (timestamp["blockNum"], slotChange - 1, timestamp["t0"], timestamp["t1"], node0WindowSkipFound, node1BlocksPerWindow, node0BlocksPerWindow))
-        if slotChange == 2:
-            Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s. node0WindowSkipFound: %s" %
-                    (timestamp["blockNum"], slotChange - 1, timestamp["t0"], timestamp["t1"], node0WindowSkipFound))
+        if slotChange > 1:
+            node0WindowSkipStr="found at block %d" % node0WindowSkip if node0WindowSkip else "was not found before this block"
+            assert slotChange <= 2, Print("ERROR: Block Number %d skipped %d block slots. t0: %s, t1: %s. Divergence occurred at block %d. Expected dropped branch slot skip %s." %
+                                          (timestamp["blockNum"], slotChange - 1, timestamp["t0"], timestamp["t1"], divergentBlockNode1["block_num"], node0WindowSkipStr))
+            potentialMissedBlockErrors=(timestamp["t0"], timestamp["t1"])
+            Print("Block Number %d skipped %d block slots, will analyze if the time reporting tool identified that system was unresponsive during that time. "
+                  "t0: %s, t1: %s. Divergence occurred at block %d. Expected dropped branch slot skip %s." %
+                  (timestamp["blockNum"], slotChange - 1, timestamp["t0"], timestamp["t1"], divergentBlockNode1["block_num"], node0WindowSkipStr))
 
     blockProducers0=[]
     blockProducers1=[]
 
     testSuccessful=True
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killWallet, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killWallet, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails, missedTimeWindows=("skipped slots", potentialMissedBlockErrors))
 
     if not testSuccessful:
         Print(Utils.FileDivider)

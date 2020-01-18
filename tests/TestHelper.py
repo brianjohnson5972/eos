@@ -2,9 +2,14 @@ from testUtils import Utils
 from Cluster import Cluster
 from WalletMgr import WalletMgr
 from datetime import datetime
+from datetime import timedelta
+from testUtils import EnumType
+from testUtils import addEnum
 import platform
+import os
 import re
-import thread
+import threading
+import time
 
 import argparse
 
@@ -31,69 +36,173 @@ class AppArgs:
         self.args.append(arg)
 
 class TimerProcess:
+    class OverlapType(EnumType):
+        pass
+
+    # in reference to the timespan data the OverlapType is on
+    addEnum(OverlapType, "begin")
+    addEnum(OverlapType, "end")
+    # timespan data is contained in other timespan
+    addEnum(OverlapType, "contained")
+    # timespan data encompasses other timespan
+    addEnum(OverlapType, "encompass")
+    # timespan data overlaps somewhere
+    addEnum(OverlapType, "any")
+
+    class MissedTimeDescriptor:
+        def __init_(self, start, stop, overlapType):
+            assert(isinstance(overlapType, OverlapType))
+            self.start=start
+            self.stop=stop
+            self.overlapType=overlapType
+
+        def check(self, start, stop):
+            def asTime(time):
+                if isintance(time, str):
+                    time=datetime.strptime(time, Utils.TimeFmt)
+                else:
+                    assert isinstance(time, datetime)
+                return time
+
+            if self.overlapType == OverlapType.begin:
+                return start <= test.start and test.start <= end
+            elif self.overlapType == OverlapType.end:
+                return start <= test.end and test.end <= end
+            elif self.overlapType == OverlapType.contains:
+                return start <= test.start and test.end <= end
+            elif self.overlapType == OverlapType.encompass:
+                return test.start <= start and end <= test.end
+            elif self.overlapType == OverlapType.any:
+                return (test.start <= start and start <= test.end) or \
+                       (start <= test.start and test.start <= end) or \
+                       (test.start <= end and end <= test.end) or \
+                       (start <= test.end and test.end <= end)
+            assert True, Utils.errorExit("No code to support overlapType: %s" % (self.overlapType))
+
     def __init__(self, outfilename, interval=0.1):
         self.interval=interval
         self.outfilename=outfilename
         self.outfile=open(outfilename,'w')
-        self.procLock=thread.allocate_lock()
+        self.procLock=threading.Lock()
         self.run=True
         self.exited=False
         self.analysis=None
-        self.expectedWindow=datetime.timedelta(milliseconds=100)
-        thread.start_new_thread(self.reportTime, ())
+        self.expectedWindow=timedelta(milliseconds=100)
+        self.thread=threading.Thread(target=self.reportTime, args=())
+        self.thread.start()
 
     def shutdown(self):
         with self.procLock:
             if Utils.Debug: Utils.Print("shutting down timer process")
             self.run=False
-            while not self.exited:
-                pass
+        self.thread.join()
         if Utils.Debug: Utils.Print("shutdown timer process")
 
     def __analyzeWindow(self, previous, current, report):
         diffTime=current - previous if previous else self.expectedWindow
-        if diffTime < 2 * self.expectedWindow:
-            return False
 
-        if "missed" not in self.analysis:
-            self.analysis['missed']=[]
+        missedStr="missed"
+        multiplier=2
+        if diffTime < multiplier * self.expectedWindow:
+            return (True, diffTime)
 
-        self.analysis["missed"].append((previous,current))
+        if missedStr not in self.analysis:
+            self.analysis[missedStr]=[]
+
+        self.analysis[missedStr].append((previous,current))
 
         if report:
             percent=int((diffTime - self.expectedWindow) / self.expectedWindow * 100)
             Utils.Print("No timing info during %s window (from %s to %s, exceeded expected time by %d%%)" % (diffTime, previous, current, percent))
 
-        return True
+        return (False, diffTime)
 
-    def analyze(self, report=Utils.Debug, failOnError=False):
-        assert not self.exited, Utils.Print("ERROR: Cannot call TimerProcess.analyze() before shutdown has been called")
+    def analyze(self, missedTimeWindows=("",[]), report=False, failOnError=False):
+        assert self.exited, Utils.Print("ERROR: Cannot call TimerProcess.analyze() before shutdown has been called")
+        assert(isinstance(missedTimeWindows, tuple))
+        assert(len(missedTimeWindows) == 2)
+        assert(isinstance(missedTimeWindows[0], str))
+        assert(isinstance(missedTimeWindows[1], list))
+
+        # get rid of the tuple
+        missedTimeWindowsDesc=missedTimeWindows[0]
+        missedTimeWindows=missedTimeWindows[1]
+        if Utils.Debug:
+            report = True
         self.analysis={}
         previous=None
-        failed=False
         with open(self.outfilename, 'r') as analyzeFile:
-            timeReg=re.compile(r'\s+(\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\d\d\d)\s')
-            for line in analyzeFile.readLines():
+            timeReg=re.compile(r'\b(\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\d\d\d(:?\d\d\d)?)\b')
+            maxDiff=timedelta(milliseconds=0)
+            missedTimerWindowCount=0
+            for line in analyzeFile.readlines():
                 match=timeReg.search(line)
                 if match:
                     lineTime=datetime.strptime(match.group(1), Utils.TimeFmt)
-                    if self.__analyzeWindow(previous, lineTime, report):
-                        failed=True
+                    (status, diffTime) = self.__analyzeWindow(previous, lineTime, report)
+                    if maxDiff < diffTime:
+                        maxDiff=diffTime
+                    if not status:
+                        missedTimerWindowCount+=1
                     previous=lineTime
+
+        if Utils.Debug: Utils.Print("Timing reporting indicates %d times the system was not getting clock time.  "
+                                    "The largest delay in the timing tool reported was: %.2f seconds." %
+                                    (missedTimerWindowCount, maxDiff.total_seconds()))
+
+        if "missed" in self.analysis:
+            missingTimes=self.analysis["missed"]
+            indent="   "
+            failed=False
+            unexplainedMissing=[]
+            explainedMissing=[]
+            for missedTimeWindow in missedTimeWindows:
+                found=False
+                for missingTime in missingTimes:
+                    if missedTimeWindow.end < missingTime[0]:
+                        break
+                    elif missedTimeWindow.check(missingTime[0], missingTime[1]):
+                        found=True
+                        explainedMissing.append((missedTimeWindow, missingTime))
+                        break
+                if not found:
+                    unexplainedMissing.append(missedTimeWindow)
+                    failed=True
+            if len(explainedMissing) > 0:
+                Utils.Print("Missing %s in the following time windows but are expected due to missing time reporting information:" % (missedTimeWindowsDesc))
+                for missing in explainedMissing:
+                    (missedTimeWindow, missingTime) = missing
+                    Utils.Print("%s%s to %s explained by %s to %s time gap" % (indent, missedTimeWindow.start, missedTimeWindow.end, missingTime[0], missingTime[1]))
+            if failed:
+                Utils.Print("ERROR: Missing %s in the following time windows:" % (missedTimeWindowsDesc))
+                for missedTimeWindow in unexplainedMissing:
+                    Utils.Print("%s%s to %s" % (indent, missedTimeWindow.start, missedTimeWindow.end))
+
+            if failed:
+                Utils.errorExit("See above errors.")
+
+            if failOnError or report:
+                missed = "Missed the following time windows:\n"
+                for miss in missingTimes:
+                    missed += "%s%s to %s\n" % (indent, miss[0], miss[1])
+                missed += "\n"
+                if failOnError: Utils.errorExit(missed)
+                elif report: Utils.Print(missed)
 
     def reportTime(self):
         try:
+            Utils.Print("Starting reportTime")
             while True:
                 with self.procLock:
                     if not self.run:
-                        self.exited=True
                         self.outfile.write(datetime.utcnow().strftime(Utils.TimeFmt) + ' exiting\n')
+                        self.exited=True
                         return
                 self.outfile.write(datetime.utcnow().strftime(Utils.TimeFmt) + '\n')
                 time.sleep(0.1)
         finally:
             self.outfile.close()
-            thread.exit()
+            Utils.Print("Stopping reportTime")
 
 # pylint: disable=too-many-instance-attributes
 class TestHelper(object):
@@ -209,7 +318,7 @@ class TestHelper(object):
     
     @staticmethod
     # pylint: disable=too-many-arguments
-    def shutdown(cluster, walletMgr, testSuccessful=True, killEosInstances=True, killWallet=True, keepLogs=False, cleanRun=True, dumpErrorDetails=False):
+    def shutdown(cluster, walletMgr, testSuccessful=True, killEosInstances=True, killWallet=True, keepLogs=False, cleanRun=True, dumpErrorDetails=False, missedTimeWindows=("",[])):
         """Cluster and WalletMgr shutdown and cleanup."""
         assert(cluster)
         assert(isinstance(cluster, Cluster))
@@ -230,7 +339,7 @@ class TestHelper(object):
 
         if TestHelper.TIMER_PROC:
             TestHelper.TIMER_PROC.shutdown()
-            TestHelper.TIMER_PROC.analyze()
+            TestHelper.TIMER_PROC.analyze(missedTimeWindows, report=True)
 
         if not testSuccessful and dumpErrorDetails:
             cluster.reportStatus()
