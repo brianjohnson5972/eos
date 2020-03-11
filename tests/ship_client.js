@@ -18,7 +18,10 @@ class Connection {
         this.tables = new Map;
 
         this.startRequestArray = true;
-        this.endRequestArray = false;
+        this.initialBlockNum = null;
+        this.finalBlockNum = null;
+        this.startRangeBlockNum = null;
+        this.blockResults = new Map()
         this.numRequests = numRequests;
         this.blockNumChangeTime = null;
         this.createTime = Date.now();
@@ -98,7 +101,6 @@ class Connection {
         } else {
             console.log(',' + "\n");
         }
-        console.log('{ \"get_status_result_v0\":');
         response["resp_num"] = this.numRequests;
         var currentTime = Date.now();
         response["resp_time"] = (currentTime - this.startTime) / 1000;
@@ -115,6 +117,7 @@ class Connection {
         }
         response["time_since_last_block"] = (currentTime - this.lastResponseTime) / 1000;
         this.lastResponseTime = currentTime;
+        console.log('{ \"get_status_result_v0\":');
         console.log(JSON.stringify(response, null, 4));
         console.log('}');
         if (this.numRequests < 0) { // request forever
@@ -122,7 +125,6 @@ class Connection {
         } else if (--this.numRequests > 0 ) {
             this.send(['get_status_request_v0', {}]);
         } else {
-            console.log(']');
             var status = { "status" : "done" }
             console.error(' ,');
             status["time"] = Date.now()
@@ -132,13 +134,57 @@ class Connection {
             }
             status["max_time"] = {"block_num": this.max["blockNum"], "time_delta": this.max["time"] };
             status["first_block_num"] = this.initialBlockNum;
+            this.finalBlockNum = blockNum;
             status["last_block_num"] = blockNum;
             status["abi_rcv_delta_time"] = (this.abiTime - this.createTime)/1000;
             status["req_rcv_delta_time"] = (this.startTime - this.createTime)/1000;
             status["done_delta_time"] = (currentTime - this.createTime)/1000;
 
             console.error(JSON.stringify(status, null, 4));
+            this.startRangeBlockNum = status["last_block_num"] - 30
+            var request = ['get_blocks_request_v0',
+                { "start_block_num" : 1,
+                    "end_block_num" : 100,
+                    "max_messages_in_flight" : 1,
+                    "have_positions" : [],
+                    "irreversible_only" : false,
+                    "fetch_block" : true,
+                    "fetch_traces" : true,
+                    "fetch_deltas" : true
+                }]
+            console.log(JSON.stringify(request, null, 4));
+            this.send(request);
+            // this.send(['get_blocks_request_v0',
+            //     { "start_block_num" : this.startRangeBlockNum,
+            //       "end_block_num" : this.finalBlockNum,
+            //       "max_messages_in_flight" : 1,
+            //       "have_positions" : [],
+            //       "irreversible_only" : false,
+            //       "fetch_block" : true,
+            //       "fetch_traces" : true,
+            //       "fetch_deltas" : true
+            //     }]);
+        }
+    }
+
+    get_blocks_ack_request_v0(ack) {
+        console.log(',' + "\n" + '{ \"get_blocks_ack_request_v0\":');
+        console.log(JSON.stringify(ack, null, 4));
+        console.log('}');
+    }
+
+    // Report status
+    get_blocks_result_v0(response) {
+        console.log(',' + "\n" + '{ \"get_blocks_result_v0\":');
+        console.log(JSON.stringify(response, null, 4));
+        console.log('}');
+        this.blockResults.set(response["head"]['block_num'], response)
+        this.send(['get_blocks_ack_request_v0', { "num_messages" : 1 }]);
+//        if (this.blockResults.size >= this.finalBlockNum - this.startRangeBlockNum + 1) {
+        if (this.blockResults.size >= 100) {
+            console.log(']');
             console.error(']');
+
             process.exit(0);
         }
     }

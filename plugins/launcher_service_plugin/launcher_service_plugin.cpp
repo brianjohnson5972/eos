@@ -63,7 +63,7 @@ namespace eosio {
    class launcher_service_plugin_impl : public std::enable_shared_from_this<launcher_service_plugin_impl> {
 
 public:
-      launcher_service_plugin_impl(boost::asio::io_service& io) : _timer(io) {}
+      launcher_service_plugin_impl(boost::asio::io_service& io) : _shutdown_timer(io), _node_remove_timer(io) {}
 
       struct node_state {
          int                        id = 0;
@@ -81,6 +81,7 @@ public:
          get_info_results                               get_info_cache;
          fc::time_point                                 get_info_cache_time;
       };
+
       struct cluster_state {
          cluster_def                                 def;
          std::map<int, node_state>                   nodes; // node id => node_state
@@ -90,12 +91,16 @@ public:
          std::map<transaction_id_type, uint32_t>     transaction_blocknum;
       };
 
+      static constexpr uint64_t                 _seconds = 1'000'000;
+      static constexpr uint64_t                 _minutes = 60 * _seconds;
       launcher_config                           _config;
       std::map<int, cluster_state>              _running_clusters;
+      std::deque<std::pair<int, int> >          _nodes_to_remove;
+      boost::asio::deadline_timer               _node_remove_timer;
+      optional<boost::posix_time::microseconds> _node_remove_timeout {_seconds};
       optional<boost::posix_time::microseconds> _idle_timeout;
-      boost::asio::deadline_timer               _timer;
+      boost::asio::deadline_timer               _shutdown_timer;
       uint32_t                                  _timer_correlation_id = 0;
-      static constexpr uint64_t                 _minutes = 60 * 1'000'000;
 
    public:
       static std::string cluster_to_string(int id) {
@@ -103,11 +108,13 @@ public:
          sprintf(str, "cluster%05d", (int)id);
          return str;
       }
+
       static std::string node_to_string(int id) {
          char str[32];
          sprintf(str, "node_%02d", (int)id);
          return str;
       }
+
       void create_path(bfs::path path, bool clean = false) {
          boost::system::error_code ec;
          if (!bfs::exists(path)) {
@@ -121,6 +128,7 @@ public:
             }
          }
       }
+
       static std::string itoa(int v) {
          char str[32];
          sprintf(str, "%d", v);
@@ -374,6 +382,7 @@ public:
             state.child->detach();
          }
       }
+
       void launch_cluster(cluster_def &def) {
          if (def.cluster_id < 0 || def.cluster_id >= _config.max_clusters) {
             throw std::runtime_error("invalid cluster id");
@@ -382,6 +391,7 @@ public:
          setup_cluster(def);
          launch_nodes(def, -1, false);
       }
+
       void start_node(int cluster_id, int node_id, std::string extra_args) {
          if (_running_clusters.find(cluster_id) == _running_clusters.end()) {
             throw std::runtime_error("cluster is not running");
@@ -394,6 +404,7 @@ public:
          }
          launch_nodes(_running_clusters[cluster_id].def, node_id, true, extra_args);
       }
+
       void stop_node(int cluster_id, int node_id, int killsig) {
          if (_running_clusters.find(cluster_id) != _running_clusters.end()) {
             if (_running_clusters[cluster_id].nodes.find(node_id) != _running_clusters[cluster_id].nodes.end()) {
@@ -402,14 +413,40 @@ public:
                   if (state.child->running()) {
                      ilog("killing pid ${p} (cluster ${c}, node ${n}) with signal ${s}", ("p", state.child->id())("c", cluster_id)("n", node_id)("s", killsig));
                      ::kill(state.child->id(), killsig);
+/*
+                     string kill_cmd = "kill " + boost::lexical_cast<std::string>(killsig) + " " + boost::lexical_cast<std::string>(state.child->id());
+                     boost::process::system( kill_cmd );
+*/
                   }
-                  if (killsig == SIGKILL || !state.child->running()) {
+                  if (!state.child->running()) {
                      state.pid = 0;
                      state.child.reset();
+                  } else {
+                     const auto launch_timer = _nodes_to_remove.empty();
+                     _nodes_to_remove.push_back({cluster_id, node_id});
+                     if (launch_timer) {
+                        _node_remove_timer.cancel();
+                        _node_remove_timer.expires_from_now( _node_remove_timeout );
+                        std::weak_ptr<launcher_service_plugin_impl> weak_this = weak_from_this();
+
+                        _node_remove_timer.async_wait( app().get_priority_queue().wrap( priority::high,
+                                                                                        [weak_this]( const boost::system::error_code& ec ) {
+                                                                                           auto self = weak_this.lock();
+                                                                                           dlog("schedule_timeout timeout fired");
+                                                                                           if( self && ec != boost::asio::error::operation_aborted ) {
+                                                                                              ilog("No requests made in ${timeout} minutes, shutting down service.",("timeout", timeout/launcher_service_plugin_impl::_minutes));
+                                                                                              self->remove_shutdown_nodes();
+                                                                                           }
+                                                                                        } ) );
+                     }
                   }
                }
             }
          }
+      }
+
+      void remove_shutdown_nodes() {
+
       }
 
       void stop_cluster(int cluster_id) {
@@ -761,19 +798,19 @@ public:
       void schedule_timeout() {
           if (_idle_timeout) {
               ilog("schedule_timeout");
-              _timer.cancel();
-              _timer.expires_from_now( *_idle_timeout);
+              _shutdown_timer.cancel();
+              _shutdown_timer.expires_from_now( *_idle_timeout);
               std::weak_ptr<launcher_service_plugin_impl> weak_this = weak_from_this();
 
-              _timer.async_wait( app().get_priority_queue().wrap( priority::high,
-                                                                  [weak_this, cid = ++_timer_correlation_id, timeout = _idle_timeout->total_microseconds()]( const boost::system::error_code& ec ) {
-                                                                      auto self = weak_this.lock();
-                                                                      dlog("schedule_timeout timeout fired");
-                                                                      if( self && ec != boost::asio::error::operation_aborted && cid == self->_timer_correlation_id ) {
-                                                                          ilog("No requests made in ${timeout} minutes, shutting down service.",("timeout", timeout/launcher_service_plugin_impl::_minutes));
-                                                                          app().quit();
-                                                                      }
-                                                                  } ) );
+              _shutdown_timer.async_wait( app().get_priority_queue().wrap( priority::high,
+                                                                           [weak_this, cid = ++_timer_correlation_id, timeout = _idle_timeout->total_microseconds()]( const boost::system::error_code& ec ) {
+                                                                               auto self = weak_this.lock();
+                                                                               dlog("schedule_timeout timeout fired");
+                                                                               if( self && ec != boost::asio::error::operation_aborted && cid == self->_timer_correlation_id ) {
+                                                                                   ilog("No requests made in ${timeout} minutes, shutting down service.",("timeout", timeout/launcher_service_plugin_impl::_minutes));
+                                                                                   app().quit();
+                                                                               }
+                                                                           } ) );
           }
 
       }
@@ -881,7 +918,8 @@ void launcher_service_plugin::plugin_shutdown() {
    ilog("launcher_service_plugin::plugin_shutdown()");
    _my->stop_all_clusters();
    _my->_idle_timeout.reset();
-   _my->_timer.cancel();
+   _my->_shutdown_timer.cancel();
+   _my->_node_remove_timer.cancel();
 }
 
 fc::variant launcher_service_plugin::get_cluster_info(launcher_service::cluster_id_param param)

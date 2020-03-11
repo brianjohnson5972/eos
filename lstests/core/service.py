@@ -628,7 +628,7 @@ class Service:
         if self.launcher_maximum_idle_time is not None:
             self.debug(color.green(f"generating {self.gene}"))
             idle_timeout_flag = f"--idle-shutdown={self.launcher_maximum_idle_time}"
-        cmdStr =  f"{self.file} --http-server-address=0.0.0.0:{self.port} --http-threads=4 --genesis-json={self.gene} " + \
+        cmdStr =  f"{self.file} --http-server-address=0.0.0.0:{self.port} --genesis-json={self.gene} " + \
                   f"{generate_genesis_flag} {idle_timeout_flag} {self.extra_args} >{PROGRAM_LOG}  2>&1 &"
         self.debug(color.green("Running: {}".format(cmdStr)))
         os.system(cmdStr)
@@ -885,6 +885,7 @@ class Cluster:
         self.flush()
 
     def check_config(self):
+        self.print_begin(f"Check config cluster_id: {self.cluster_id}")
         bassert(0 <= self.cluster_id < 30, f"Invalid cluster_id ({self.cluster_id}). Valid range is [0, 30).")
         bassert(self.node_count >= self.pnode_count + self.unstarted_count,
                 f"node_count ({self.node_count}) must be greater than "
@@ -895,6 +896,7 @@ class Cluster:
             bassert(self.center_node_id not in (0, self.node_count-1),
                     f"center_node_id ({self.center_node_id}) cannot be 0 or {self.node_count-1} "
                     f"when topology is \"bridge\" and node_count is {self.node_count}.")
+        self.print_end(f"Check config cluster_id: {self.cluster_id}")
 
     def print_config(self):
         self.print_header("cluster configuration")
